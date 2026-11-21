@@ -3,6 +3,10 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.6.22
+
+- The device name page says Save, and its top button says Cancel (it leaves without saving). An unset device name shows "Tap to set".
+
 ## 0.6.21
 
 - Settings › Device has a Device name row: type the name of this Kindle on the keyboard (1 to 32 letters, digits or spaces).
