@@ -490,7 +490,7 @@ checksum = "3bd1574e617a9a6c1f8f8181bd7e841e1f20e4277607ef28945765188d6284d4"
 
 [[package]]
 name = "kl-core"
-version = "0.6.19"
+version = "0.6.20"
 dependencies = [
  "kl-store",
  "primitive-keyboard",
@@ -501,7 +501,7 @@ dependencies = [
 
 [[package]]
 name = "kl-desktop"
-version = "0.6.19"
+version = "0.6.20"
 dependencies = [
  "kl-core",
  "kl-render",
@@ -514,7 +514,7 @@ dependencies = [
 
 [[package]]
 name = "kl-kindle"
-version = "0.6.19"
+version = "0.6.20"
 dependencies = [
  "kl-core",
  "kl-store",
@@ -528,7 +528,7 @@ dependencies = [
 
 [[package]]
 name = "kl-launcher"
-version = "0.6.19"
+version = "0.6.20"
 dependencies = [
  "kl-core",
  "kl-kindle",
@@ -542,7 +542,7 @@ dependencies = [
 
 [[package]]
 name = "kl-render"
-version = "0.6.19"
+version = "0.6.20"
 dependencies = [
  "kl-core",
  "parley",
@@ -554,7 +554,7 @@ dependencies = [
 
 [[package]]
 name = "kl-store"
-version = "0.6.19"
+version = "0.6.20"
 dependencies = [
  "http",
  "ring",
@@ -760,7 +760,7 @@ dependencies = [
 
 [[package]]
 name = "primitive-device"
-version = "0.6.19"
+version = "0.6.20"
 dependencies = [
  "kl-core",
  "libc",
@@ -769,7 +769,7 @@ dependencies = [
 
 [[package]]
 name = "primitive-eink"
-version = "0.6.19"
+version = "0.6.20"
 dependencies = [
  "kl-core",
  "kl-render",
@@ -779,7 +779,7 @@ dependencies = [
 
 [[package]]
 name = "primitive-input"
-version = "0.6.19"
+version = "0.6.20"
 dependencies = [
  "kl-core",
  "libc",

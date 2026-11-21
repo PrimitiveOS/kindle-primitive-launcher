@@ -3,6 +3,11 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.6.20
+
+- The Kindle model is detected from the device (its platform codename). Settings › Device shows the model, and where it cannot be detected, "Kindle model" lists the supported Kindles to choose from. Any Kindle that has the processor the apps need (armhf) can install; the launcher says when the model has not been tested.
+- The Store lists only apps with a package for this Kindle's processor, and says when an app is not tested on this Kindle yet. The launcher writes the device details (no serial number) for the Store.
+
 ## 0.6.19
 
 - The Store's updates badge is recounted when the Store closes, so an update installed or refreshed in the Store is not still counted on the Store icon.

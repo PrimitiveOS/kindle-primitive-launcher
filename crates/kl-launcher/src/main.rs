@@ -299,11 +299,10 @@ fn main() {
     let mut ui = Ui::new(apps, layout);
 
     ui.version = env!("CARGO_PKG_VERSION").to_string();
-    // The profile is the build target. Firmware comes from the device itself.
-    ui.device_profile = Some(profile::ACTIVE.name.split(" (").next().unwrap_or(profile::ACTIVE.name).into());
     ui.firmware = device::store_device().map(|device| {
         device.firmware.nums.iter().map(u64::to_string).collect::<Vec<_>>().join(".")
     });
+    set_device_identity(&mut ui, &settings, &dir);
     ui.set_installed_apps(installed_apps);
     ui.set_icon_choices(png_files(&dir.join("icons")));
     ui.set_wallpapers(wallpapers);
@@ -1103,6 +1102,17 @@ fn main() {
                     display.show(renderer.draw(&ui, &status), &settings, false);
                     continue;
                 }
+                if let DeviceCmd::PickModel(index) = cmd {
+                    ui.notice = Some(match apply_device_model(index, &settings_path, &mut settings) {
+                        Ok(name) => {
+                            set_device_identity(&mut ui, &settings, &dir);
+                            format!("Kindle model: {name}")
+                        }
+                        Err(error) => format!("The model could not be saved. {error}"),
+                    });
+                    display.show(renderer.draw(&ui, &status), &settings, false);
+                    continue;
+                }
                 if matches!(cmd, DeviceCmd::StoreToggleDailyCheck | DeviceCmd::StoreClearCache) {
                     ui.notice = if from_mirror || device::usb_state() == kl_core::Usb::Drive {
                         Some("Eject the Kindle drive before changing Store settings.".into())
@@ -1338,6 +1348,47 @@ fn png_files(dir: &Path) -> Vec<String> {
     files
 }
 
+/// The model in use and how it is known: detected from the codename, else the owner's choice, else unknown. Shown on
+/// the Device page and written to `device.txt` for the Store. The serial is never read or written.
+fn set_device_identity(ui: &mut Ui, settings: &Settings, dir: &Path) {
+    let detected = device::detected_model();
+    let (model, source) = match (detected, settings.device_model.as_deref().and_then(kl_core::models::model_by_id)) {
+        (Some(model), _) => (Some(model), "detected"),
+        (None, Some(model)) => (Some(model), "selected"),
+        (None, None) => (None, "unknown"),
+    };
+    let codename = device::platform_codename().unwrap_or_else(|| "none".into());
+    let arch = device::store_device().map_or_else(|| "armhf".to_string(), |device| device.arch);
+    let firmware = ui.firmware.clone().unwrap_or_else(|| "unknown".into());
+    let name = model.map_or("Unknown Kindle", |model| model.name);
+    let untested = model.is_none_or(|model| !model.verified);
+    ui.device_model_id = model.map(|model| model.id.to_string());
+    ui.device_model_name = name.to_string();
+    ui.device_source = source.to_string();
+    ui.device_untested = untested;
+    ui.device_profile = Some(name.to_string());
+    let text = format!(
+        "model={}\nmodel_name={name}\nmodel_source={source}\ncodename={codename}\narch={arch}\nfirmware={firmware}\nuntested={}\n",
+        model.map_or("unknown", |model| model.id),
+        if untested { "yes" } else { "no" },
+    );
+    if let Err(error) = write_atomic(&dir.join("device.txt"), &text) {
+        log(&format!("could not write device.txt: {error}"));
+    }
+}
+
+/// Save the owner's model (`models::MODELS[index]`) in the preferences file, and return its name.
+fn apply_device_model(index: u8, settings_path: &Path, settings: &mut Settings) -> std::io::Result<&'static str> {
+    let model = kl_core::models::MODELS
+        .get(index as usize)
+        .ok_or_else(|| std::io::Error::other("unknown model"))?;
+    let mut updated = settings.clone();
+    updated.device_model = Some(model.id.to_string());
+    write_atomic(&Settings::preferences_path(settings_path), &updated.preferences_text())?;
+    *settings = updated;
+    Ok(model.name)
+}
+
 fn apply_store_setting(cmd: DeviceCmd, launcher: &Path, settings_path: &Path, settings: &mut Settings) -> std::io::Result<()> {
     if cmd == DeviceCmd::StoreClearCache {
         return kl_store::refresh::clear_cache(launcher);
@@ -1375,6 +1426,8 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
         | DeviceCmd::ToggleDarkMode
         | DeviceCmd::ToggleSleepScreen => {}
         DeviceCmd::SyncClock | DeviceCmd::RefreshTimeZone => {}
+        // Handled where the settings are saved: the model choice writes the preferences and the device file.
+        DeviceCmd::PickModel(_) => {}
         DeviceCmd::ToggleAutostart => device::set_autostart(&dir.to_string_lossy(), !status.autostart),
         DeviceCmd::SetLight(level) => device::set_light(level),
         DeviceCmd::SetWarmth(level) => device::set_warmth(level),
