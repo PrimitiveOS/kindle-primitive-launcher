@@ -3,6 +3,11 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.6.21
+
+- Settings › Device has a Device name row: type the name of this Kindle on the keyboard (1 to 32 letters, digits or spaces).
+- Device information shows the device name, the series number, the Wi-Fi MAC address, the IP address and the screen panel. The serial number is not shown.
+
 ## 0.6.20
 
 - The Kindle model is detected from the device (its platform codename). Settings › Device shows the model, and where it cannot be detected, "Kindle model" lists the supported Kindles to choose from. Any Kindle that has the processor the apps need (armhf) can install; the launcher says when the model has not been tested.

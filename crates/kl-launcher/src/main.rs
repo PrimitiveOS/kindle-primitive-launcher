@@ -303,6 +303,10 @@ fn main() {
         device.firmware.nums.iter().map(u64::to_string).collect::<Vec<_>>().join(".")
     });
     set_device_identity(&mut ui, &settings, &dir);
+    ui.device_name = settings.device_name.clone();
+    ui.series = device::version_text().and_then(|text| kl_core::models::series_number(&text));
+    ui.mac = device::mac_address();
+    ui.panel = device::panel_code();
     ui.set_installed_apps(installed_apps);
     ui.set_icon_choices(png_files(&dir.join("icons")));
     ui.set_wallpapers(wallpapers);
@@ -963,6 +967,16 @@ fn main() {
                 start_wifi_forget(tx.clone(), name);
                 display.show(renderer.draw(&ui, &status), &settings, false);
             }
+            Action::SetDeviceName(name) => {
+                ui.notice = Some(match save_device_name(&name, &settings_path, &mut settings) {
+                    Ok(()) => {
+                        ui.device_name = Some(name);
+                        "Device name saved".to_string()
+                    }
+                    Err(error) => format!("The name could not be saved. {error}"),
+                });
+                display.show(renderer.draw(&ui, &status), &settings, false);
+            }
             Action::SetSshPassword(password) => {
                 start_ssh_job(tx.clone(), move |dir| match device::set_ssh_password(dir, &password) {
                     Ok(()) => "SSH password set".to_string(),
@@ -1375,6 +1389,18 @@ fn set_device_identity(ui: &mut Ui, settings: &Settings, dir: &Path) {
     if let Err(error) = write_atomic(&dir.join("device.txt"), &text) {
         log(&format!("could not write device.txt: {error}"));
     }
+}
+
+/// Save the owner's device name in the preferences file.
+fn save_device_name(name: &str, settings_path: &Path, settings: &mut Settings) -> std::io::Result<()> {
+    if !kl_core::ui::valid_device_name(name) {
+        return Err(std::io::Error::other("use 1 to 32 letters, digits or spaces"));
+    }
+    let mut updated = settings.clone();
+    updated.device_name = Some(name.to_string());
+    write_atomic(&Settings::preferences_path(settings_path), &updated.preferences_text())?;
+    *settings = updated;
+    Ok(())
 }
 
 /// Save the owner's model (`models::MODELS[index]`) in the preferences file, and return its name.

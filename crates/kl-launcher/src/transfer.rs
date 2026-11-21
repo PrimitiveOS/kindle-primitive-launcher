@@ -361,7 +361,16 @@ mod tests {
             stream.read_to_string(&mut response).unwrap();
             response
         };
-        assert!(send("wrong", "other.epub", 3, "bad").starts_with("HTTP/1.1 403"));
+        // A wrong code writes nothing, so it can be asked again if the connection ended before an answer arrived (the
+        // race that made this test fail now and then on a loaded machine). The answer must still be the 403.
+        let mut refused = String::new();
+        for _ in 0..3 {
+            refused = send("wrong", "other.epub", 3, "bad");
+            if !refused.is_empty() {
+                break;
+            }
+        }
+        assert!(refused.starts_with("HTTP/1.1 403"), "a wrong code is refused: {refused:?}");
         assert!(send(&session.code, "book.epub", 4, "text").starts_with("HTTP/1.1 201"));
         assert!(send(&session.code, "book.epub", 3, "new").starts_with("HTTP/1.1 409"));
         assert!(send(&session.code, "partial.epub", 4, "bad").starts_with("HTTP/1.1 500"));
