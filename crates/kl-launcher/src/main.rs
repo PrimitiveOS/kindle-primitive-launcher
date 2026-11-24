@@ -354,8 +354,6 @@ fn main() {
     #[cfg(feature = "viewport-handoff")]
     let mut viewport = viewport_layer::Layer::new(status.usb);
     #[cfg(feature = "viewport-handoff")]
-    let mut viewport_display = Display::open();
-    #[cfg(feature = "viewport-handoff")]
     let (native_tx, rx) = viewport_layer::input_stream(rx);
     for (hint, name) in [(profile::ACTIVE.touch_name, "touch"), ("gpio-keys", "page-button")] {
         let Some(path) = input::find(hint) else {
@@ -443,6 +441,8 @@ fn main() {
     let mut mark_trial_ready = update_trial;
     let mut transfer_session = None;
     let mut clock_sync = None::<clock_sync::ClockSync>;
+    #[cfg(feature = "viewport-handoff")]
+    let mut projected = None::<viewport_layer::Surface>;
     // The system layer: an app runs under the launcher, which keeps sleep, the lock screen and quick settings.
     let system_layer_on = system_layer::enabled();
     let mut app_session: Option<system_layer::AppSession> = None;
@@ -461,47 +461,72 @@ fn main() {
         }
         let Ok(ev) = rx.recv() else { break };
         #[cfg(feature = "viewport-handoff")]
-        let ev = {
-            let mut panel = viewport_layer::DevicePanel { run: &run, display: &mut viewport_display };
+        let (ev, projected_input) = {
+            if display.projection_failed() {
+                viewport.abandon();
+            }
+            let mut panel = viewport_layer::DevicePanel { run: &run, display: &mut display };
             match ev {
                 viewport_layer::Event::Shared(ev) => {
-                    if viewport.shared(&ev, &mut panel, settings.dark_mode) {
+                    let handled = viewport.shared(&ev, &mut panel, settings.dark_mode);
+                    if !viewport.is_open() {
+                        viewport_layer::Surface::close(&mut projected, &mut display, &mut renderer, &mut ui);
+                    }
+                    if handled {
+                        if matches!(ev, Ev::Input(Input::Sleep)) && ui.screen != Screen::Sleep {
+                            power.break_history();
+                            clock_sync = None;
+                            ui.clock_syncing = false;
+                            ui.screen = Screen::Sleep;
+                            if settings.sleep_screen_launcher && renderer.has_sleep_image() && viewport.scoped_sleep() {
+                                let pixels = renderer.draw(&ui, &status);
+                                let mut panel = viewport_layer::DevicePanel { run: &run, display: &mut display };
+                                viewport.show_sleep(&mut panel, settings.rotation, pixels);
+                            }
+                        } else if matches!(ev, Ev::Input(Input::Wake)) && ui.screen == Screen::Sleep {
+                            ui.screen = Screen::Home;
+                            if ui.usb != kl_core::Usb::Drive && ui.wallpapers.sleep == WallpaperChoice::Rotate {
+                                let sleep = wallpaper::saved_picture(&dir, WallpaperTarget::Sleep, &ui.wallpapers, &mut sleep_rotation);
+                                wallpaper::use_launcher_sleep(&run, sleep.is_some());
+                                renderer.set_sleep_image(sleep);
+                            }
+                        }
                         continue;
                     }
-                    ev
+                    (ev, false)
                 }
                 viewport_layer::Event::Native(event) => {
-                    match viewport.native(event, &mut panel, &status, || font_paths(&dir, &run)) {
-                        viewport_layer::Reaction::Legacy(input) => Ev::Input(input),
+                    let reaction = viewport.native(event, &mut panel, settings.dark_mode, || font_paths(&dir, &run));
+                    if !viewport.is_open() {
+                        viewport_layer::Surface::close(&mut projected, &mut display, &mut renderer, &mut ui);
+                    }
+                    match reaction {
+                        viewport_layer::Reaction::Legacy(input) => (Ev::Input(input), false),
+                        viewport_layer::Reaction::Projected(input) => (Ev::Input(input), true),
                         viewport_layer::Reaction::Consumed => continue,
-                        viewport_layer::Reaction::Device(cmd) => {
-                            if matches!(cmd, DeviceCmd::ToggleAnimation | DeviceCmd::ToggleDarkMode) {
-                                let mut next = settings.clone();
-                                if cmd == DeviceCmd::ToggleDarkMode {
-                                    next.dark_mode = !next.dark_mode;
-                                } else {
-                                    next.animation = !next.animation;
-                                }
-                                if !from_mirror && power.write_leased(&settings_path, &next.base_text()).is_ok() {
-                                    settings = next;
-                                }
-                                status = device::status(&settings);
-                            } else {
-                                if matches!(cmd, DeviceCmd::Light(_) | DeviceCmd::SetLight(_)) {
-                                    power.manually_changed_light();
-                                }
-                                run_device(cmd, &mut status, &mut settings, &dir, &run, &settings_path);
-                            }
-                            power.populate(&mut status, now_secs());
-                            viewport.paint(&mut panel, &status);
+                        viewport_layer::Reaction::Opened(candidate) => {
+                            let ready = viewport.ready().expect("opened viewport captures its owner");
+                            projected = Some(viewport_layer::Surface::open(
+                                ready, *candidate, &mut renderer, &mut ui, &settings,
+                            ));
+                            let backdrop = viewport.backdrop(settings.dark_mode);
+                            renderer.set_backdrop(backdrop.clone());
+                            display.bind_projection(viewport_layer::Output::new(&run, ready.clone(), backdrop));
+                            let frame = renderer.draw(&ui, &status);
+                            display.show_region(frame, ui.layout.quick_panel(), &settings);
                             continue;
                         }
                     }
                 }
             }
         };
+        #[cfg(not(feature = "viewport-handoff"))]
+        let projected_input = false;
         let previous_screen = ui.screen;
         let previous_usb = ui.usb;
+        #[cfg(feature = "viewport-handoff")]
+        let storage_returned = matches!(&ev, Ev::Usb(usb) if *usb != kl_core::Usb::Drive)
+            && previous_usb == kl_core::Usb::Drive;
         let action = match ev {
             Ev::Wifi(info) => {
                 ui.set_wifi(info);
@@ -555,6 +580,13 @@ fn main() {
                     ui.store_update_count = bootstrap::available_updates(&dir);
                     for problem in kl_render::load_icons(&mut renderer, ui.apps(), &ui.layout, Some(&dir.join("cache"))) {
                         log(&format!("problem: {problem}"));
+                    }
+                    #[cfg(feature = "viewport-handoff")]
+                    if let Some(surface) = &mut projected {
+                        let home = surface.home_layout(&ui);
+                        for problem in kl_render::load_icons(surface.home_renderer(), ui.apps(), &home, Some(&dir.join("cache"))) {
+                            log(&format!("problem: {problem}"));
+                        }
                     }
                     if let Err(error) = lease.release() {
                         log(&format!("launcher storage release: {error}"));
@@ -615,9 +647,6 @@ fn main() {
                     power.observe_light(&fresh);
                     power.save_if_due(&dir, !from_mirror && fresh.usb != kl_core::Usb::Drive && bootstrapping_store.is_none());
                     // Quick settings also shows CPU, memory and storage: redraw it when those change.
-                    #[cfg(feature = "viewport-handoff")]
-                    let quick_shown = ui.screen == Screen::QuickSettings || viewport.is_open();
-                    #[cfg(not(feature = "viewport-handoff"))]
                     let quick_shown = ui.screen == Screen::QuickSettings;
                     let changed = if shown {
                         status.bar_differs(&fresh) || (quick_shown
@@ -720,10 +749,14 @@ fn main() {
                 }
             }
             Ev::Input(native_input) => {
-                let mut input = system_layer::screen_input(native_input, display.turn.unwrap_or(settings.rotation));
+                let mut input = if projected_input {
+                    native_input
+                } else {
+                    system_layer::screen_input(native_input, display.turn.unwrap_or(settings.rotation))
+                };
                 // An app is in front: its input is its own, except the swipe that opens quick settings and the power
                 // events. For those the app is frozen and its screen saved, and the launcher draws again.
-                if let Some(session) = app_session.as_mut().filter(|s| s.in_front()) {
+                if let Some(session) = app_session.as_mut().filter(|s| s.in_front() && !projected_input) {
                     if !matches!(native_input, Input::Swipe { .. } | Input::Sleep) {
                         continue;
                     }
@@ -780,6 +813,12 @@ fn main() {
                         display.show(frame, &settings, false);
                     }
                 }
+                #[cfg(feature = "viewport-handoff")]
+                if projected_input && !display.verify_projection() {
+                    viewport.abandon();
+                    viewport_layer::Surface::close(&mut projected, &mut display, &mut renderer, &mut ui);
+                    continue;
+                }
                 let before = ui.screen;
                 ui.display_support = status.display_support;
                 let action = ui.handle(input);
@@ -806,10 +845,21 @@ fn main() {
         };
         power.populate(&mut status, now_secs());
         #[cfg(feature = "viewport-handoff")]
-        if matches!(action, Action::Redraw { .. }) {
-            let mut panel = viewport_layer::DevicePanel { run: &run, display: &mut viewport_display };
-            viewport.paint(&mut panel, &status);
+        if projected_input && !display.verify_projection() {
+            viewport.abandon();
+            viewport_layer::Surface::close(&mut projected, &mut display, &mut renderer, &mut ui);
+            continue;
         }
+        #[cfg(feature = "viewport-handoff")]
+        let action = if projected.is_some() && ui.screen == Screen::Home {
+            let can_restore = projected.as_ref().is_some_and(|surface| surface.same_rotation(&settings));
+            let mut panel = viewport_layer::DevicePanel { run: &run, display: &mut display };
+            viewport.finish(&mut panel, can_restore, true, settings.dark_mode);
+            viewport_layer::Surface::close(&mut projected, &mut display, &mut renderer, &mut ui);
+            Action::None
+        } else {
+            action
+        };
         let action = match action {
             Action::Device(cmd @ (DeviceCmd::OpenInstalledApps | DeviceCmd::RemoveInstalledApp(_))) => {
                 let app = match cmd {
@@ -921,6 +971,15 @@ fn main() {
                 if full {
                     status = device::status(&settings);
                 }
+                #[cfg(feature = "viewport-handoff")]
+                if ui.screen == Screen::Sleep && viewport.scoped_sleep() {
+                    if storage_returned && settings.sleep_screen_launcher && renderer.has_sleep_image() {
+                        let pixels = renderer.draw(&ui, &status);
+                        let mut panel = viewport_layer::DevicePanel { run: &run, display: &mut display };
+                        viewport.show_sleep(&mut panel, settings.rotation, pixels);
+                    }
+                    continue;
+                }
                 display.show(renderer.draw(&ui, &status), &settings, full);
             }
             Action::Launch(mut app) => {
@@ -1022,7 +1081,16 @@ fn main() {
                 match save_library_setting(from_mirror, &mut power, change) {
                     Ok(()) => {
                         ui.set_grid(columns, rows);
-                        for problem in kl_render::load_icons(&mut renderer, ui.apps(), &ui.layout, Some(&dir.join("cache"))) {
+                        #[cfg(feature = "viewport-handoff")]
+                        let (icons, layout) = if let Some(surface) = &mut projected {
+                            let home = surface.home_layout(&ui);
+                            (surface.home_renderer(), home)
+                        } else {
+                            (&mut renderer, ui.layout)
+                        };
+                        #[cfg(not(feature = "viewport-handoff"))]
+                        let (icons, layout) = (&mut renderer, ui.layout);
+                        for problem in kl_render::load_icons(icons, ui.apps(), &layout, Some(&dir.join("cache"))) {
                             log(&format!("icon: {problem}"));
                         }
                     }
@@ -1123,7 +1191,13 @@ fn main() {
                         renderer.set_wallpaper_preview(None);
                         ui.notice = None;
                         match target {
-                            WallpaperTarget::Home => renderer.set_home_wallpaper(image),
+                            WallpaperTarget::Home => {
+                                #[cfg(feature = "viewport-handoff")]
+                                if let Some(surface) = &mut projected {
+                                    surface.home_renderer().set_home_wallpaper(image.clone());
+                                }
+                                renderer.set_home_wallpaper(image);
+                            },
                             WallpaperTarget::Sleep => {
                                 sleep_rotation = next;
                                 settings.sleep_screen_launcher = ui.wallpapers.sleep != WallpaperChoice::Default;
@@ -1131,6 +1205,10 @@ fn main() {
                                 wallpaper::use_launcher_sleep(&run, image.is_some());
                                 if ui.wallpapers.sleep == WallpaperChoice::Rotate && image.is_none() {
                                     ui.notice = Some("Copy PNGs to launcher/screensavers to use rotation.".into());
+                                }
+                                #[cfg(feature = "viewport-handoff")]
+                                if let Some(surface) = &mut projected {
+                                    surface.home_renderer().set_sleep_image(image.clone());
                                 }
                                 renderer.set_sleep_image(image);
                             }
@@ -1143,8 +1221,26 @@ fn main() {
             }
             Action::KindleMode => {
                 log("leaving for the Kindle UI");
-                wallpaper::use_launcher_sleep(&run, false);
                 // The dialog turns into "Opening the Kindle UI"; the wait screen fills its blocks from here.
+                #[cfg(feature = "viewport-handoff")]
+                if let Some(surface) = &mut projected {
+                    let layout = surface.home_layout(&ui);
+                    let (portrait, _) = surface.home_renderer().waiting_dialog(&layout, 0, settings.dark_mode);
+                    if let Some(frame) = viewport.stock_frame(portrait, settings.rotation) {
+                        display.show(frame, &settings, true);
+                    }
+                    if display.projection_failed() {
+                        viewport.abandon();
+                        viewport_layer::Surface::close(&mut projected, &mut display, &mut renderer, &mut ui);
+                        continue;
+                    }
+                    wallpaper::use_launcher_sleep(&run, false);
+                    let mut panel = viewport_layer::DevicePanel { run: &run, display: &mut display };
+                    viewport.finish(&mut panel, false, false, settings.dark_mode);
+                    // Let the supervisor's wait screen continue on the same portrait frame.
+                    std::process::exit(EXIT_KINDLE_UI);
+                }
+                wallpaper::use_launcher_sleep(&run, false);
                 let (frame, area) = renderer.waiting_dialog(&ui.layout, 0, settings.dark_mode);
                 if app_session.is_some() {
                     // Over an app the rest of the screen is the app's picture, and the app is closing: the dialog
@@ -1290,6 +1386,10 @@ fn main() {
                     // Over an app that follows the theme, the app under the panel is shown in the new theme at once
                     // (its picture inverted), so this one update shows the whole screen as it will be.
                     if cmd == DeviceCmd::ToggleDarkMode {
+                        #[cfg(feature = "viewport-handoff")]
+                        if viewport.is_open() {
+                            renderer.set_backdrop(viewport.backdrop(settings.dark_mode));
+                        }
                         if let Some(saved) = app_session.as_ref().and_then(|session| session.saved.as_ref()) {
                             renderer.set_backdrop(saved.backdrop(settings.dark_mode, system_layer::can_redraw(&run)));
                         }
@@ -1303,6 +1403,17 @@ fn main() {
                     display.show(frame, &settings, true);
                     // Let the screen finish its refresh before the system halts.
                     std::thread::sleep(std::time::Duration::from_secs(3));
+                }
+                #[cfg(feature = "viewport-handoff")]
+                if projected.is_some() && matches!(cmd, DeviceCmd::Restart | DeviceCmd::RestartLauncher | DeviceCmd::PowerOff) {
+                    if !display.verify_projection() {
+                        viewport.abandon();
+                        viewport_layer::Surface::close(&mut projected, &mut display, &mut renderer, &mut ui);
+                        continue;
+                    }
+                    let mut panel = viewport_layer::DevicePanel { run: &run, display: &mut display };
+                    viewport.finish(&mut panel, false, false, settings.dark_mode);
+                    viewport_layer::Surface::close(&mut projected, &mut display, &mut renderer, &mut ui);
                 }
                 let previous_rotation = settings.rotation;
                 if matches!(cmd, DeviceCmd::Light(_) | DeviceCmd::SetLight(_)) && status.display_support.front_light {

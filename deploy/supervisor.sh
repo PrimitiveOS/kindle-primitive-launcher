@@ -648,7 +648,8 @@ finish() {
 clear_app_turn() {
     rm -f "$APP_TURN_OWNER" "$APP_TURN_OWNER.tmp" "$APP_VIEWPORT_OFFER" "$APP_VIEWPORT_OFFER.tmp"
     if [ -n "${app_turn_dir:-}" ]; then
-        rm -f "$app_turn_dir/turn" "$app_turn_dir/turn.tmp" "$app_turn_dir/viewport" "$app_turn_dir/viewport.tmp"
+        rm -f "$app_turn_dir/turn" "$app_turn_dir/turn.tmp" "$app_turn_dir/viewport" "$app_turn_dir/viewport.tmp" \
+            "$app_turn_dir/launcher-occluded" "$app_turn_dir/launcher-occluded.tmp"
         rmdir "$app_turn_dir" 2>/dev/null || :
         app_turn_dir=
     fi

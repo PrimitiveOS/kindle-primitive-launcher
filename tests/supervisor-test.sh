@@ -361,6 +361,8 @@ case "${KL_APP_VIEWPORT_FILE:-}" in
         cmp -s "$STATE/viewport-expected" "$KL_RUN/app-turn-owner" || exit 3
         : > "$KL_APP_VIEWPORT_FILE"
         : > "$KL_APP_VIEWPORT_FILE.tmp"
+        printf '3\n' > "$scope/launcher-occluded"
+        : > "$scope/launcher-occluded.tmp"
         printf 'scoped\n' > "$STATE/viewport-result"
         ;;
     *) exit 4 ;;
@@ -372,6 +374,7 @@ EOF
     [ "$scenario" != supported ] || expected=scoped
     check "viewport negotiation for $scenario" '[ "$(cat "$STATE/viewport-result")" = "$expected" ]'
     check "viewport record cleaned for $scenario" '! find "$KL_RUN" -name "*viewport*" -print | grep -q .'
+    check "turn scope fully cleaned for $scenario" '! find "$KL_RUN" -name "app-turn.*" -print | grep -q .'
     teardown
 done
 unset KL_EXPERIMENTAL_VIEWPORT_HANDOFF

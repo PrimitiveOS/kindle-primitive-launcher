@@ -145,6 +145,8 @@ impl AppScreen {
 pub struct OverlayDisplay {
     panel: Display,
     pub turn: Option<Rotation>,
+    #[cfg(feature = "viewport-handoff")]
+    projection: Option<crate::viewport_layer::Output>,
 }
 
 impl OverlayDisplay {
@@ -152,19 +154,53 @@ impl OverlayDisplay {
         Self {
             panel: Display::open(),
             turn: None,
+            #[cfg(feature = "viewport-handoff")]
+            projection: None,
         }
     }
 
     pub fn show(&mut self, pixels: Vec<u8>, settings: &Settings, full: bool) {
+        #[cfg(feature = "viewport-handoff")]
+        if let Some(output) = &mut self.projection {
+            output.show(&mut self.panel, output.screen(), pixels, full);
+            return;
+        }
         let mut output = settings.clone();
         output.rotation = self.turn.unwrap_or(settings.rotation);
         self.panel.show(pixels, &output, full);
     }
 
     pub fn show_region(&mut self, pixels: Vec<u8>, rect: Rect, settings: &Settings) {
+        #[cfg(feature = "viewport-handoff")]
+        if let Some(output) = &mut self.projection {
+            output.show(&mut self.panel, rect, pixels, false);
+            return;
+        }
         let mut output = settings.clone();
         output.rotation = self.turn.unwrap_or(settings.rotation);
         self.panel.show_region(pixels, rect, &output);
+    }
+
+    #[cfg(feature = "viewport-handoff")]
+    pub fn bind_projection(&mut self, output: crate::viewport_layer::Output) {
+        self.panel.set_paused(false);
+        self.projection = Some(output);
+    }
+
+    #[cfg(feature = "viewport-handoff")]
+    pub fn clear_projection(&mut self) {
+        self.panel.set_paused(true);
+        self.projection = None;
+    }
+
+    #[cfg(feature = "viewport-handoff")]
+    pub fn verify_projection(&mut self) -> bool {
+        self.projection.as_mut().is_some_and(|output| output.verify(&mut self.panel))
+    }
+
+    #[cfg(feature = "viewport-handoff")]
+    pub fn projection_failed(&self) -> bool {
+        self.projection.as_ref().is_some_and(|output| output.failed())
     }
 }
 
