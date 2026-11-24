@@ -51,11 +51,31 @@ Launcher grid.
 
 ## Verification and activation
 
-Use a temporary local Tools checkout at `0dca2a7` under `tools/` and run
-`cargo test --locked --workspace --features viewport-handoff`. The
-shipped build uses the committed Tools pin. Run
-`sh tests/supervisor-test.sh` to check correct offer eligibility, the
-default-off and legacy paths, and scoped cleanup.
+Initialize the committed Tools gitlink with
+`git submodule update --init tools`. Launcher and Reader use Tools
+`c8ee49b764c96c013d0fa8e9d79dfdeddbdaaecc` for the viewport protocol,
+display projection, and page-key fence. Run the locked workspace builds
+and tests with both feature configurations on the host.
+
+```sh
+cargo build --locked --workspace
+cargo test --locked --workspace -- --test-threads=1
+cargo build --locked --workspace --features viewport-handoff
+cargo test --locked --workspace --features viewport-handoff -- --test-threads=1
+sh tests/supervisor-test.sh
+```
+
+On the Apple Silicon host, both locked builds succeeded. The default
+workspace run passed 368 tests and the feature run passed 379, with two
+existing ignored tests in each run. The compiled Launcher capability
+probe exited with status 1 in the default build and 0 with the feature.
+All 134 supervisor checks passed, including the offer, runtime opt-in,
+and crash-recovery cutoff cases.
+
+The feature remains off by default. Even the experimental binary only
+offers the viewport to eligible Reader runs when the supervisor receives
+the explicit runtime opt-in. The existing Documents entry is used for
+these runs.
 
 The fake framebuffer cases render Quick Settings and exercise logical touch
 and key mapping across all four turns and both supported firmware turns.
