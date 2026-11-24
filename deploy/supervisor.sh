@@ -29,6 +29,8 @@ PIDFILE=$RUN/supervisor.pid
 LAUNCHER_PID=$RUN/launcher.pid
 LAUNCHER_STATUS=$RUN/launcher.status
 APP_PID=$RUN/app.pid
+APP_TURN_OWNER=$RUN/app-turn-owner
+app_turn_dir=
 HOLDER_PID=$RUN/holder.pid
 WAIT_PID=$RUN/wait.pid
 APP_WATCH=$RUN/app-watch.pid
@@ -636,7 +638,19 @@ finish() {
     wait_screen_stop
     logger_stop
     rm -f "$PIDFILE" "$LAUNCHER_PID" "$APP_PID" "$HOLDER_PID" "$STORE_OPEN" "$STORE_OPEN.tmp"
+    clear_app_turn
     log "end"
+}
+
+# The path given to an app is unique to this run. A late write from an old child
+# can never supply the turn of a later app, even if the kernel reuses its PID.
+clear_app_turn() {
+    rm -f "$APP_TURN_OWNER" "$APP_TURN_OWNER.tmp"
+    if [ -n "${app_turn_dir:-}" ]; then
+        rm -f "$app_turn_dir/turn" "$app_turn_dir/turn.tmp"
+        rmdir "$app_turn_dir" 2>/dev/null || :
+        app_turn_dir=
+    fi
 }
 
 on_signal() {
@@ -813,11 +827,17 @@ run_app() {
     fi
     log "app start: $kind $arg (in $adir)"
     t0=$(date +%s)
+    clear_app_turn
+    app_turn_dir=$(mktemp -d "$RUN/app-turn.XXXXXX" 2>/dev/null) || app_turn_dir=
     (
         cd "$adir" 2>/dev/null || cd /mnt/us 2>/dev/null || cd /
         export PRIMITIVE_LAUNCHER=1 PRIMITIVE_FRAMEWORK=stopped KL_STORE_OPEN_APP="$store_can_open"
         export KL_STORE_USB_LEASE="$store_can_lease"
         export KL_STORE_START_TAB="$store_start_tab"
+        unset KL_APP_TURN_FILE
+        if [ -n "$app_turn_dir" ]; then
+            export KL_APP_TURN_FILE="$app_turn_dir/turn"
+        fi
         unset KL_NATIVE_APP_RUN
         if [ "$native_can_lease" -eq 1 ]; then
             export KL_NATIVE_APP_RUN="$NATIVE_APP_RUN"
@@ -833,6 +853,13 @@ run_app() {
     ) >> "$app_log" 2>&1 &
     apid=$!
     echo "$apid" > "$APP_PID"
+    if [ -n "$app_turn_dir" ]; then
+        app_start=$(store_child_started_at "$apid")
+        if [ -n "$app_start" ]; then
+            printf 'v1 %s %s %s\n' "$apid" "$app_start" "${app_turn_dir##*/}" > "$APP_TURN_OWNER.tmp" &&
+                mv "$APP_TURN_OWNER.tmp" "$APP_TURN_OWNER"
+        fi
+    fi
     app_redraw=no
     [ "$kind" = script ] && app_redraws_on_wake "$arg" && app_redraw=yes
     # The launcher reads this before it asks the app to redraw: SIGUSR1 ends an app that does not handle it.
@@ -858,6 +885,7 @@ run_app() {
         kill -0 "$apid" 2>/dev/null || break
     done
     rm -f "$APP_PID"
+    clear_app_turn
     watch=$(cat "$APP_WATCH" 2>/dev/null)
     # Stop the watcher and its children (lipc-wait-event and the loop that reads it), or they outlive it.
     [ -n "$watch" ] && kill_tree "$watch"

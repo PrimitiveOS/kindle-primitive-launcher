@@ -20,10 +20,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{
-        atomic::Ordering,
-        mpsc::{channel, Sender},
-    },
+    sync::mpsc::{channel, Sender},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -239,7 +236,6 @@ fn main() {
             settings.rotation = turn;
         }
     }
-    input::TURN.store(settings.rotation.turn(), Ordering::Relaxed);
     let _ = write_atomic(&run.join("orientation"), settings.rotation.letter());
     if std::env::args().any(|a| a == "--wait-screen") {
         wait_screen(&dir, &run, &settings);
@@ -317,7 +313,7 @@ fn main() {
         log(&format!("app {}: {}", app.id, app.name));
     }
     ui.notice = problems.first().cloned();
-    let mut display = Display::open();
+    let mut display = system_layer::OverlayDisplay::open();
     let mut status = device::status(&settings);
     ui.set_battery(status.battery, status.charging);
     let now = now_secs();
@@ -523,7 +519,6 @@ fn main() {
             Ev::Turn(rotation) => {
                 if settings.auto_rotation && rotation != settings.rotation {
                     settings.rotation = rotation;
-                    input::TURN.store(rotation.turn(), Ordering::Relaxed);
                     let _ = write_atomic(&run.join("orientation"), rotation.letter());
                     log(&format!("screen turned: {}", rotation.letter()));
                     status = device::status(&settings);
@@ -638,6 +633,8 @@ fn main() {
                 if app_session.take().is_some() {
                     log("system layer: the app ended; the launcher takes the screen back");
                     renderer.set_backdrop(None);
+                    display.turn = None;
+                    let _ = write_atomic(&run.join("orientation"), settings.rotation.letter());
                     input::grab_touch(false);
                     display.set_paused(false);
                     ui.pressed = None;
@@ -654,26 +651,44 @@ fn main() {
                     Action::None
                 }
             }
-            Ev::Input(input) => {
+            Ev::Input(native_input) => {
+                let mut input = system_layer::screen_input(native_input, display.turn.unwrap_or(settings.rotation));
                 // An app is in front: its input is its own, except the swipe that opens quick settings and the power
                 // events. For those the app is frozen and its screen saved, and the launcher draws again.
                 if let Some(session) = app_session.as_mut().filter(|s| s.in_front()) {
+                    if !matches!(native_input, Input::Swipe { .. } | Input::Sleep) {
+                        continue;
+                    }
+                    let Some(process) = system_layer::foreground_process(&run) else { continue };
+                    let turn = system_layer::foreground_turn(&run, process, settings.rotation);
+                    input = system_layer::screen_input(native_input, turn.rotation);
                     let opens = system_layer::opens_quick_settings(input, ui.layout.status().bottom());
                     if input != Input::Sleep && !opens {
                         continue;
                     }
-                    system_layer::freeze(&run, true);
+                    if !system_layer::freeze(&run, process, true) {
+                        continue;
+                    }
+                    let turn = system_layer::foreground_turn(&run, process, settings.rotation);
+                    if system_layer::foreground_process(&run) != Some(process) {
+                        continue;
+                    }
+                    input = system_layer::screen_input(native_input, turn.rotation);
+                    let opens = system_layer::opens_quick_settings(input, ui.layout.status().bottom());
+                    if input != Input::Sleep && !opens {
+                        system_layer::freeze(&run, process, false);
+                        continue;
+                    }
                     if opens {
                         input::grab_touch(true);
                     }
-                    session.saved = Some(display.snapshot().unwrap_or_default());
+                    let framebuffer_turn = display.fb_turn();
+                    let pixels = display.snapshot().filter(|_| display.fb_turn() == framebuffer_turn);
+                    let saved = system_layer::AppScreen::capture(process, turn, framebuffer_turn, &settings, pixels);
                     // Every system pop-up over the app is drawn over the app's screen, not the home screen.
-                    renderer.set_backdrop(
-                        session.saved.as_deref().filter(|s| !s.is_empty())
-                            .map(|s| system_layer::upright(s, settings.rotation, display.fb_turn())),
-                    );
-                    session.dark_mode_at_open = settings.dark_mode;
-                    session.rotation_at_open = settings.rotation;
+                    renderer.set_backdrop(saved.backdrop(settings.dark_mode, false));
+                    session.saved = Some(saved);
+                    display.turn = Some(turn.rotation);
                     display.set_paused(false);
                     log(&format!("system layer: {} over the app", if opens { "quick settings" } else { "sleep" }));
                 }
@@ -772,40 +787,31 @@ fn main() {
         // Quick settings or the sleep screen closed over an app: put the app's screen back and let it run.
         let action = match app_session.as_mut() {
             Some(session) if !session.in_front() && ui.screen == Screen::Home => {
-                let mut picture = session.saved.take().unwrap_or_default();
-                let theme_changed = settings.dark_mode != session.dark_mode_at_open;
-                // A turn (in Settings) is handled like a theme change: the saved screen no longer fits.
-                let turned = settings.rotation != session.rotation_at_open;
-                let app_redraws = system_layer::can_redraw(&run);
-                // An app that redraws gets its screen back as it will look (dark mode is the screen inverted; a half
-                // turn is the panel's memory reversed), so its own redraw, which does not flash, lands on a matching
-                // picture. From quick settings only the panel's box changes (a calm update); from Settings, a full
-                // page, it is one full update. An app that cannot redraw gets its screen back as it was.
-                if app_redraws && !picture.is_empty() {
-                    if theme_changed {
-                        system_layer::in_other_theme(&mut picture);
-                    }
-                    if turned {
-                        picture.reverse();
-                    }
-                }
-                let theme_changed = theme_changed || turned;
-                let restored = !picture.is_empty();
-                if restored {
-                    display.restore(picture);
-                }
-                display.set_paused(true);
+                let saved = session.saved.take().expect("overlay has a saved screen");
+                display.turn = None;
                 input::grab_touch(false);
                 ui.pressed = None;
                 renderer.set_backdrop(None);
-                // The redraw request goes first, while the app is still frozen: the signal is delivered the moment
-                // the app runs again, before anything it had queued, so nothing is drawn in the old theme.
-                if (theme_changed || !restored) && !system_layer::ask_redraw(&run) && !restored {
-                    log("system layer: the screen could not be saved and the app cannot redraw");
+                let active = system_layer::foreground_process(&run);
+                let process = saved.process;
+                if active == Some(process) {
+                    let (picture, needs_redraw) = saved.resume(&settings, display.fb_turn(), system_layer::can_redraw(&run));
+                    let restored = picture.is_some();
+                    if let Some(picture) = picture {
+                        display.restore(picture);
+                    }
+                    display.set_paused(true);
+                    // Queue redraw before releasing the same app that owned the saved screen.
+                    if needs_redraw && !system_layer::ask_redraw(&run, process) && !restored {
+                        log("system layer: the screen could not be saved and the app cannot redraw");
+                    }
+                    system_layer::freeze(&run, process, false);
+                    log("system layer: back to the app");
+                    Action::None
+                } else {
+                    display.set_paused(active.is_some());
+                    Action::Redraw { full: true }
                 }
-                system_layer::freeze(&run, false);
-                log("system layer: back to the app");
-                Action::None
             }
             _ => action,
         };
@@ -1211,14 +1217,8 @@ fn main() {
                     // Over an app that follows the theme, the app under the panel is shown in the new theme at once
                     // (its picture inverted), so this one update shows the whole screen as it will be.
                     if cmd == DeviceCmd::ToggleDarkMode {
-                        if let Some(session) = app_session.as_ref() {
-                            if let Some(saved) = session.saved.as_deref().filter(|s| !s.is_empty()) {
-                                let mut picture = system_layer::upright(saved, settings.rotation, display.fb_turn());
-                                if settings.dark_mode != session.dark_mode_at_open && system_layer::can_redraw(&run) {
-                                    system_layer::in_other_theme(&mut picture);
-                                }
-                                renderer.set_backdrop(Some(picture));
-                            }
+                        if let Some(saved) = app_session.as_ref().and_then(|session| session.saved.as_ref()) {
+                            renderer.set_backdrop(saved.backdrop(settings.dark_mode, system_layer::can_redraw(&run)));
                         }
                     }
                     display.show(renderer.draw(&ui, &status), &settings, cmd != DeviceCmd::ToggleAnimation);
@@ -1463,7 +1463,6 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
             if settings.auto_rotation {
                 if let Some(turn) = device::accelerometer_turn() {
                     settings.rotation = turn;
-                    input::TURN.store(turn.turn(), Ordering::Relaxed);
                     let _ = write_atomic(&run.join("orientation"), turn.letter());
                 }
             }
@@ -1474,7 +1473,6 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
         DeviceCmd::ToggleRotation => {
             settings.auto_rotation = false;
             settings.rotation = settings.rotation.flipped();
-            input::TURN.store(settings.rotation.turn(), Ordering::Relaxed);
             if let Err(e) = write_atomic(settings_path, &settings.base_text()) {
                 log(&format!("settings: {e}"));
             }

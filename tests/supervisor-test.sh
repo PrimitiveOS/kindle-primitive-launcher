@@ -285,6 +285,36 @@ check "markers removed" '[ ! -f "$KL_RUN/framework-stopped" ] && [ ! -f "$KL_RUN
 check "binary copied to run" '[ -x "$KL_RUN/kl-launcher" ]'
 teardown
 
+echo "test: each app run gets its own foreground turn file"
+setup
+export REAL_AWK=$(command -v awk)
+cat > "$ROOT/bin/awk" <<'EOF'
+#!/bin/sh
+case "${2:-}" in
+    /proc/[0-9]*/stat) printf '75\n' ;;
+    *) exec "$REAL_AWK" "$@" ;;
+esac
+EOF
+chmod 755 "$ROOT/bin/awk"
+cat > "$STATE/app.sh" <<'EOF'
+case "$KL_APP_TURN_FILE" in
+    "$KL_RUN"/app-turn.??????/turn) ;;
+    *) exit 1 ;;
+esac
+printf '%s\n' "$KL_APP_TURN_FILE" >> "$STATE/turn-files"
+printf 'v1 D fixed\n' > "$KL_APP_TURN_FILE.tmp" && mv "$KL_APP_TURN_FILE.tmp" "$KL_APP_TURN_FILE"
+sleep 1
+dir=${KL_APP_TURN_FILE%/turn}
+printf 'v1 %s 75 %s\n' "$(cat "$KL_RUN/app.pid")" "${dir##*/}" > "$STATE/expected-owner"
+cmp -s "$STATE/expected-owner" "$KL_RUN/app-turn-owner" && echo "foreground owner published" >> "$STATE/calls"
+EOF
+printf '10\n10\n0\n' > "$STATE/codes"
+run_sup
+check "each app was given a unique turn file" '[ "$(sort -u "$STATE/turn-files" | wc -l | tr -d " ")" = 2 ]'
+check "each turn file had a live supervisor owner record" '[ "$(grep -c "foreground owner published" "$STATE/calls")" = 2 ]'
+check "exiting apps cleared their turn files and ownership" '! find "$KL_RUN" -name "app-turn*" -print | grep -q .'
+teardown
+
 echo "test: settings writes hold a short storage lease while Launcher stays open"
 setup
 printf 'settings-write\n' > "$STATE/codes"
