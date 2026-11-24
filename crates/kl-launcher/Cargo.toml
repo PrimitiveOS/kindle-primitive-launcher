@@ -8,6 +8,9 @@ license.workspace = true
 name = "kl-launcher"
 path = "src/main.rs"
 
+[features]
+viewport-handoff = []
+
 [dependencies]
 kl-store = { path = "../../tools/crates/kl-store" }
 kl-core = { path = "../../tools/crates/kl-core" }

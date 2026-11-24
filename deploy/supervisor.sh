@@ -30,6 +30,7 @@ LAUNCHER_PID=$RUN/launcher.pid
 LAUNCHER_STATUS=$RUN/launcher.status
 APP_PID=$RUN/app.pid
 APP_TURN_OWNER=$RUN/app-turn-owner
+APP_VIEWPORT_OFFER=$RUN/app-viewport-offer
 app_turn_dir=
 HOLDER_PID=$RUN/holder.pid
 WAIT_PID=$RUN/wait.pid
@@ -645,9 +646,9 @@ finish() {
 # The path given to an app is unique to this run. A late write from an old child
 # can never supply the turn of a later app, even if the kernel reuses its PID.
 clear_app_turn() {
-    rm -f "$APP_TURN_OWNER" "$APP_TURN_OWNER.tmp"
+    rm -f "$APP_TURN_OWNER" "$APP_TURN_OWNER.tmp" "$APP_VIEWPORT_OFFER" "$APP_VIEWPORT_OFFER.tmp"
     if [ -n "${app_turn_dir:-}" ]; then
-        rm -f "$app_turn_dir/turn" "$app_turn_dir/turn.tmp"
+        rm -f "$app_turn_dir/turn" "$app_turn_dir/turn.tmp" "$app_turn_dir/viewport" "$app_turn_dir/viewport.tmp"
         rmdir "$app_turn_dir" 2>/dev/null || :
         app_turn_dir=
     fi
@@ -829,12 +830,27 @@ run_app() {
     t0=$(date +%s)
     clear_app_turn
     app_turn_dir=$(mktemp -d "$RUN/app-turn.XXXXXX" 2>/dev/null) || app_turn_dir=
+    app_viewport_offer=no
+    # Experimental and disabled by default. Grant only the copied Reader entry
+    # with the regular storage and redraw contract and explicit v2 capability.
+    if [ "${KL_EXPERIMENTAL_VIEWPORT_HANDOFF:-0}" = 1 ] && [ "$resident_app" = yes ] &&
+        [ "$native_can_lease" -eq 1 ] && [ "$arg" = "$DOCUMENTS/Reader.sh" ] && [ -n "$app_turn_dir" ] &&
+        app_redraws_on_wake "$NATIVE_APP_RUN/launch" &&
+        head -n 10 "$NATIVE_APP_RUN/launch" | grep -Fxq '# PrimitiveViewportHandoff: 2' &&
+        "$RUN/kl-launcher" --viewport-handoff-supported >/dev/null 2>&1 &&
+        printf 'pending\n' > "$APP_VIEWPORT_OFFER.tmp" &&
+        mv -f "$APP_VIEWPORT_OFFER.tmp" "$APP_VIEWPORT_OFFER"; then
+        app_viewport_offer=yes
+    fi
     (
         cd "$adir" 2>/dev/null || cd /mnt/us 2>/dev/null || cd /
         export PRIMITIVE_LAUNCHER=1 PRIMITIVE_FRAMEWORK=stopped KL_STORE_OPEN_APP="$store_can_open"
         export KL_STORE_USB_LEASE="$store_can_lease"
         export KL_STORE_START_TAB="$store_start_tab"
-        unset KL_APP_TURN_FILE
+        unset KL_APP_TURN_FILE KL_APP_VIEWPORT_FILE
+        if [ "$app_viewport_offer" = yes ]; then
+            export KL_APP_VIEWPORT_FILE="$app_turn_dir/viewport"
+        fi
         if [ -n "$app_turn_dir" ]; then
             export KL_APP_TURN_FILE="$app_turn_dir/turn"
         fi
@@ -858,6 +874,10 @@ run_app() {
         if [ -n "$app_start" ]; then
             printf 'v1 %s %s %s\n' "$apid" "$app_start" "${app_turn_dir##*/}" > "$APP_TURN_OWNER.tmp" &&
                 mv "$APP_TURN_OWNER.tmp" "$APP_TURN_OWNER"
+            if [ "$app_viewport_offer" = yes ]; then
+                printf 'v1 %s %s %s\n' "$apid" "$app_start" "${app_turn_dir##*/}" > "$APP_VIEWPORT_OFFER.tmp" &&
+                    mv -f "$APP_VIEWPORT_OFFER.tmp" "$APP_VIEWPORT_OFFER"
+            fi
         fi
     fi
     app_redraw=no

@@ -45,6 +45,13 @@ pub struct AppProcess {
     started: u64,
 }
 
+#[cfg(feature = "viewport-handoff")]
+impl AppProcess {
+    pub fn matches_viewport_owner(self, owner: &kl_kindle::viewport::ViewportOwner) -> bool {
+        self.pid as u32 == owner.pid && self.started == owner.started_at
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AppTurn {
     pub rotation: Rotation,

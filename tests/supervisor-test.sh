@@ -77,6 +77,7 @@ EOF
     cat > "$KL_DIR/kl-launcher" <<'EOF'
 #!/bin/sh
 if [ "$1" = --wait-screen ]; then echo "wait screen shown" >> "$STATE/calls"; exec sleep 1000; fi
+if [ "$1" = --viewport-handoff-supported ]; then [ -f "$STATE/viewport-supported" ]; exit $?; fi
 code=$(head -n 1 "$STATE/codes")
 tail -n +2 "$STATE/codes" > "$STATE/codes.tmp"; mv "$STATE/codes.tmp" "$STATE/codes"
 echo "launcher run: $code" >> "$STATE/calls"
@@ -132,6 +133,13 @@ case "$code" in
             fi
             sleep 1
         done
+        exit 3
+        ;;
+    resident-viewport)
+        entry=$(cat "$STATE/viewport-entry")
+        printf '%s\nscript\n%s\n' "$KL_DOCUMENTS" "$KL_DOCUMENTS/$entry" > "$KL_RUN/next"
+        kill -USR1 "$(cat "$KL_RUN/supervisor.pid")"
+        for i in 1 2 3 4 5 6; do [ -f "$STATE/viewport-result" ] && exit 0; sleep 1; done
         exit 3
         ;;
     # The system layer: ask the supervisor for the slow app and stay; then freeze it (quick settings) and crash, or
@@ -314,6 +322,59 @@ check "each app was given a unique turn file" '[ "$(sort -u "$STATE/turn-files" 
 check "each turn file had a live supervisor owner record" '[ "$(grep -c "foreground owner published" "$STATE/calls")" = 2 ]'
 check "exiting apps cleared their turn files and ownership" '! find "$KL_RUN" -name "app-turn*" -print | grep -q .'
 teardown
+
+echo "test: viewport offers require the explicit feature, Reader entry, and opt-in"
+REAL_AWK=$(command -v awk)
+export REAL_AWK
+for scenario in default-off marker-missing another-app supported; do
+    setup
+    case "$scenario" in
+        default-off) unset KL_EXPERIMENTAL_VIEWPORT_HANDOFF ;;
+        *) export KL_EXPERIMENTAL_VIEWPORT_HANDOFF=1 ;;
+    esac
+    entry=Reader.sh
+    [ "$scenario" != another-app ] || entry=Other.sh
+    printf '%s\n' "$entry" > "$STATE/viewport-entry"
+    : > "$STATE/viewport-supported"
+    cat > "$ROOT/bin/awk" <<'EOF'
+#!/bin/sh
+case "${2:-}" in
+    /proc/[0-9]*/stat) printf '75\n' ;;
+    *) exec "$REAL_AWK" "$@" ;;
+esac
+EOF
+    chmod 755 "$ROOT/bin/awk"
+    printf '#!/bin/sh\n# PrimitiveUSBLease\n# Wake: redraw\n' > "$KL_DOCUMENTS/$entry"
+    if [ "$scenario" != marker-missing ]; then
+        printf '# PrimitiveViewportHandoff: 2\n' >> "$KL_DOCUMENTS/$entry"
+    fi
+    cat >> "$KL_DOCUMENTS/$entry" <<'EOF'
+sleep 1
+case "${KL_APP_VIEWPORT_FILE:-}" in
+    "")
+        printf 'legacy\n' > "$STATE/viewport-result"
+        ;;
+    "$KL_RUN"/app-turn.??????/viewport)
+        scope=${KL_APP_VIEWPORT_FILE%/viewport}
+        printf 'v1 %s 75 %s\n' "$(cat "$KL_RUN/app.pid")" "${scope##*/}" > "$STATE/viewport-expected"
+        cmp -s "$STATE/viewport-expected" "$KL_RUN/app-viewport-offer" || exit 2
+        cmp -s "$STATE/viewport-expected" "$KL_RUN/app-turn-owner" || exit 3
+        : > "$KL_APP_VIEWPORT_FILE"
+        : > "$KL_APP_VIEWPORT_FILE.tmp"
+        printf 'scoped\n' > "$STATE/viewport-result"
+        ;;
+    *) exit 4 ;;
+esac
+EOF
+    printf 'resident-viewport\n' > "$STATE/codes"
+    run_sup
+    expected=legacy
+    [ "$scenario" != supported ] || expected=scoped
+    check "viewport negotiation for $scenario" '[ "$(cat "$STATE/viewport-result")" = "$expected" ]'
+    check "viewport record cleaned for $scenario" '! find "$KL_RUN" -name "*viewport*" -print | grep -q .'
+    teardown
+done
+unset KL_EXPERIMENTAL_VIEWPORT_HANDOFF
 
 echo "test: settings writes hold a short storage lease while Launcher stays open"
 setup

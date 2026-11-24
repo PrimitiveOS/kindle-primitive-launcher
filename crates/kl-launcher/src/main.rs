@@ -14,6 +14,8 @@ mod management;
 mod power;
 mod system_layer;
 mod transfer;
+#[cfg(feature = "viewport-handoff")]
+mod viewport_layer;
 mod wallpaper;
 
 use std::{
@@ -214,7 +216,11 @@ fn store_launch_descriptor(dir: &Path, documents: &Path, apps: &[App], id: &str)
 fn main() {
     let mut dir = env_dir("KL_DIR", "/mnt/us/launcher");
     let mut args = std::env::args().skip(1);
-    if args.next().as_deref() == Some("--launcher-update") {
+    let mode = args.next();
+    if mode.as_deref() == Some("--viewport-handoff-supported") {
+        std::process::exit(if cfg!(feature = "viewport-handoff") { 0 } else { 1 });
+    }
+    if mode.as_deref() == Some("--launcher-update") {
         std::process::exit(launcher_update_command(&dir, args.next().as_deref().unwrap_or("")));
     }
     install_crash_log();
@@ -345,19 +351,37 @@ fn main() {
     }
 
     let (tx, rx) = channel();
-    match input::find(profile::ACTIVE.touch_name) {
-        Some(path) => {
+    #[cfg(feature = "viewport-handoff")]
+    let mut viewport = viewport_layer::Layer::new(status.usb);
+    #[cfg(feature = "viewport-handoff")]
+    let mut viewport_display = Display::open();
+    #[cfg(feature = "viewport-handoff")]
+    let (native_tx, rx) = viewport_layer::input_stream(rx);
+    for (hint, name) in [(profile::ACTIVE.touch_name, "touch"), ("gpio-keys", "page-button")] {
+        let Some(path) = input::find(hint) else {
+            log(&format!("no {name} device found"));
+            continue;
+        };
+        #[cfg(not(feature = "viewport-handoff"))]
+        {
             let t = tx.clone();
-            thread::spawn(move || input::touch_loop(path, t));
+            thread::spawn(move || match name {
+                "touch" => input::touch_loop(path, t),
+                _ => input::button_loop(path, t),
+            });
         }
-        None => log("no touch device found"),
-    }
-    match input::find("gpio-keys") {
-        Some(path) => {
-            let t = tx.clone();
-            thread::spawn(move || input::button_loop(path, t));
+        #[cfg(feature = "viewport-handoff")]
+        {
+            let t = native_tx.clone();
+            let generation = viewport.generation.clone();
+            thread::spawn(move || {
+                let send = |event| { let _ = t.send(viewport_layer::Event::Native(event)); };
+                match name {
+                    "touch" => input::viewport_touch_loop(path, &generation, send),
+                    _ => input::viewport_button_loop(path, &generation, send),
+                }
+            });
         }
-        None => log("no page-button device found"),
     }
     {
         let t = tx.clone();
@@ -436,6 +460,46 @@ fn main() {
             }
         }
         let Ok(ev) = rx.recv() else { break };
+        #[cfg(feature = "viewport-handoff")]
+        let ev = {
+            let mut panel = viewport_layer::DevicePanel { run: &run, display: &mut viewport_display };
+            match ev {
+                viewport_layer::Event::Shared(ev) => {
+                    if viewport.shared(&ev, &mut panel, settings.dark_mode) {
+                        continue;
+                    }
+                    ev
+                }
+                viewport_layer::Event::Native(event) => {
+                    match viewport.native(event, &mut panel, &status, || font_paths(&dir, &run)) {
+                        viewport_layer::Reaction::Legacy(input) => Ev::Input(input),
+                        viewport_layer::Reaction::Consumed => continue,
+                        viewport_layer::Reaction::Device(cmd) => {
+                            if matches!(cmd, DeviceCmd::ToggleAnimation | DeviceCmd::ToggleDarkMode) {
+                                let mut next = settings.clone();
+                                if cmd == DeviceCmd::ToggleDarkMode {
+                                    next.dark_mode = !next.dark_mode;
+                                } else {
+                                    next.animation = !next.animation;
+                                }
+                                if !from_mirror && power.write_leased(&settings_path, &next.base_text()).is_ok() {
+                                    settings = next;
+                                }
+                                status = device::status(&settings);
+                            } else {
+                                if matches!(cmd, DeviceCmd::Light(_) | DeviceCmd::SetLight(_)) {
+                                    power.manually_changed_light();
+                                }
+                                run_device(cmd, &mut status, &mut settings, &dir, &run, &settings_path);
+                            }
+                            power.populate(&mut status, now_secs());
+                            viewport.paint(&mut panel, &status);
+                            continue;
+                        }
+                    }
+                }
+            }
+        };
         let previous_screen = ui.screen;
         let previous_usb = ui.usb;
         let action = match ev {
@@ -551,8 +615,12 @@ fn main() {
                     power.observe_light(&fresh);
                     power.save_if_due(&dir, !from_mirror && fresh.usb != kl_core::Usb::Drive && bootstrapping_store.is_none());
                     // Quick settings also shows CPU, memory and storage: redraw it when those change.
+                    #[cfg(feature = "viewport-handoff")]
+                    let quick_shown = ui.screen == Screen::QuickSettings || viewport.is_open();
+                    #[cfg(not(feature = "viewport-handoff"))]
+                    let quick_shown = ui.screen == Screen::QuickSettings;
                     let changed = if shown {
-                        status.bar_differs(&fresh) || (ui.screen == Screen::QuickSettings
+                        status.bar_differs(&fresh) || (quick_shown
                             && (status.system != fresh.system || status.display_differs(&fresh)))
                     } else {
                         status.settings_differs(&fresh) || (ui.screen == Screen::Page(Page::Battery)
@@ -737,6 +805,11 @@ fn main() {
             }
         };
         power.populate(&mut status, now_secs());
+        #[cfg(feature = "viewport-handoff")]
+        if matches!(action, Action::Redraw { .. }) {
+            let mut panel = viewport_layer::DevicePanel { run: &run, display: &mut viewport_display };
+            viewport.paint(&mut panel, &status);
+        }
         let action = match action {
             Action::Device(cmd @ (DeviceCmd::OpenInstalledApps | DeviceCmd::RemoveInstalledApp(_))) => {
                 let app = match cmd {
