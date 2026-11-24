@@ -220,6 +220,15 @@ fn main() {
     if mode.as_deref() == Some("--viewport-handoff-supported") {
         std::process::exit(if cfg!(feature = "viewport-handoff") { 0 } else { 1 });
     }
+    #[cfg(feature = "viewport-handoff")]
+    if mode.as_deref() == Some("--resume-viewport-page-keys") {
+        let run = env_dir("KL_RUN", "/var/tmp/kl");
+        if let Err(error) = viewport_layer::resume_page_keys(&run) {
+            log(&format!("system layer: could not release page keys after Launcher exit: {error}"));
+            std::process::exit(1);
+        }
+        return;
+    }
     if mode.as_deref() == Some("--launcher-update") {
         std::process::exit(launcher_update_command(&dir, args.next().as_deref().unwrap_or("")));
     }

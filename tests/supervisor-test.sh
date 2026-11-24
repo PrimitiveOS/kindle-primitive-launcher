@@ -78,6 +78,7 @@ EOF
 #!/bin/sh
 if [ "$1" = --wait-screen ]; then echo "wait screen shown" >> "$STATE/calls"; exec sleep 1000; fi
 if [ "$1" = --viewport-handoff-supported ]; then [ -f "$STATE/viewport-supported" ]; exit $?; fi
+if [ "$1" = --resume-viewport-page-keys ]; then echo "viewport key cutoff sealed" >> "$STATE/calls"; exit 0; fi
 code=$(head -n 1 "$STATE/codes")
 tail -n +2 "$STATE/codes" > "$STATE/codes.tmp"; mv "$STATE/codes.tmp" "$STATE/codes"
 echo "launcher run: $code" >> "$STATE/calls"
@@ -135,11 +136,18 @@ case "$code" in
         done
         exit 3
         ;;
-    resident-viewport)
+    resident-viewport|resident-viewport-crash)
         entry=$(cat "$STATE/viewport-entry")
         printf '%s\nscript\n%s\n' "$KL_DOCUMENTS" "$KL_DOCUMENTS/$entry" > "$KL_RUN/next"
         kill -USR1 "$(cat "$KL_RUN/supervisor.pid")"
-        for i in 1 2 3 4 5 6; do [ -f "$STATE/viewport-result" ] && exit 0; sleep 1; done
+        for i in 1 2 3 4 5 6; do
+            if [ -f "$STATE/viewport-result" ]; then
+                [ "$code" = resident-viewport-crash ] || exit 0
+                kill -STOP "$(cat "$KL_RUN/app.pid")"
+                exit 3
+            fi
+            sleep 1
+        done
         exit 3
         ;;
     # The system layer: ask the supervisor for the slow app and stay; then freeze it (quick settings) and crash, or
@@ -326,7 +334,7 @@ teardown
 echo "test: viewport offers require the explicit feature, Reader entry, and opt-in"
 REAL_AWK=$(command -v awk)
 export REAL_AWK
-for scenario in default-off marker-missing another-app supported; do
+for scenario in default-off marker-missing another-app supported supported-crash; do
     setup
     case "$scenario" in
         default-off) unset KL_EXPERIMENTAL_VIEWPORT_HANDOFF ;;
@@ -336,6 +344,7 @@ for scenario in default-off marker-missing another-app supported; do
     [ "$scenario" != another-app ] || entry=Other.sh
     printf '%s\n' "$entry" > "$STATE/viewport-entry"
     : > "$STATE/viewport-supported"
+    if [ "$scenario" = supported-crash ]; then : > "$STATE/viewport-restart"; fi
     cat > "$ROOT/bin/awk" <<'EOF'
 #!/bin/sh
 case "${2:-}" in
@@ -349,6 +358,7 @@ EOF
         printf '# PrimitiveViewportHandoff: 2\n' >> "$KL_DOCUMENTS/$entry"
     fi
     cat >> "$KL_DOCUMENTS/$entry" <<'EOF'
+trap ':' USR1
 sleep 1
 case "${KL_APP_VIEWPORT_FILE:-}" in
     "")
@@ -363,15 +373,33 @@ case "${KL_APP_VIEWPORT_FILE:-}" in
         : > "$KL_APP_VIEWPORT_FILE.tmp"
         printf '3\n' > "$scope/launcher-occluded"
         : > "$scope/launcher-occluded.tmp"
+        printf 'held\n' > "$scope/launcher-page-key-cutoff"
+        : > "$scope/launcher-page-key-cutoff.tmp"
         printf 'scoped\n' > "$STATE/viewport-result"
+        if [ -f "$STATE/viewport-restart" ]; then
+            for i in 1 2 3 4 5 6; do
+                if grep -qx 'viewport key cutoff sealed' "$STATE/calls"; then exit 0; fi
+                sleep 1
+            done
+            exit 5
+        fi
         ;;
     *) exit 4 ;;
 esac
 EOF
-    printf 'resident-viewport\n' > "$STATE/codes"
+    case "$scenario" in
+        supported-crash) printf 'resident-viewport-crash\nattach\n' > "$STATE/codes" ;;
+        *) printf 'resident-viewport\n' > "$STATE/codes" ;;
+    esac
     run_sup
-    expected=legacy
-    [ "$scenario" != supported ] || expected=scoped
+    case "$scenario" in
+        supported*) expected=scoped ;;
+        *) expected=legacy ;;
+    esac
+    if [ "$scenario" = supported-crash ]; then
+        check "viewport keys sealed during Launcher recovery" 'grep -qx "viewport key cutoff sealed" "$STATE/calls"'
+        check "Launcher reattached after the cutoff" '[ "$(grep -n "viewport key cutoff sealed" "$STATE/calls" | cut -d: -f1)" -lt "$(grep -n "launcher attach" "$STATE/calls" | cut -d: -f1)" ]'
+    fi
     check "viewport negotiation for $scenario" '[ "$(cat "$STATE/viewport-result")" = "$expected" ]'
     check "viewport record cleaned for $scenario" '! find "$KL_RUN" -name "*viewport*" -print | grep -q .'
     check "turn scope fully cleaned for $scenario" '! find "$KL_RUN" -name "app-turn.*" -print | grep -q .'

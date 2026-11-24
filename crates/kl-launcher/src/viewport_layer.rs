@@ -19,7 +19,7 @@ use kl_kindle::{
     display::Display,
     input::{ViewportEvent, ViewportGeneration},
     viewport::{
-        live_viewport_owner, read_ready_viewport, FramebufferGeometry, ReadyViewport,
+        live_viewport_owner, read_ready_viewport, FramebufferGeometry, PageKeyFence, ReadyViewport,
         ViewportOwner, ViewportRecord,
     },
     Ev,
@@ -69,6 +69,8 @@ fn offer(run: &Path) -> Offer {
 trait Panel {
     fn framebuffer(&self) -> Option<FramebufferGeometry>;
     fn owner_stopped(&self, owner: &ViewportOwner) -> bool;
+    fn hold_page_keys(&self, owner: &ViewportOwner) -> bool;
+    fn resume_page_keys(&self, owner: &ViewportOwner);
     fn ready(&self, minimum: u64, stopped: bool) -> Option<ReadyViewport>;
     fn freeze(&mut self, owner: &ViewportOwner, on: bool) -> bool;
     fn snapshot(&self, framebuffer: FramebufferGeometry) -> Option<Vec<u8>>;
@@ -102,6 +104,21 @@ impl Panel for DevicePanel<'_> {
     fn owner_stopped(&self, owner: &ViewportOwner) -> bool {
         live_viewport_owner(self.run, Path::new("/proc"))
             .is_some_and(|live| live.stopped && &live.owner == owner)
+    }
+
+    fn hold_page_keys(&self, owner: &ViewportOwner) -> bool {
+        self.owner_stopped(owner)
+            && PageKeyFence::new(&owner.viewport_path(self.run))
+                .hold()
+                .is_ok()
+    }
+
+    fn resume_page_keys(&self, owner: &ViewportOwner) {
+        if let Err(error) = resume_page_keys_for_owner(self.run, owner) {
+            kl_kindle::log(&format!(
+                "system layer: could not release page keys: {error}"
+            ));
+        }
     }
 
     fn ready(&self, minimum: u64, stopped: bool) -> Option<ReadyViewport> {
@@ -208,6 +225,20 @@ impl Panel for DevicePanel<'_> {
             },
         }
     }
+}
+
+pub fn resume_page_keys(run: &Path) -> io::Result<()> {
+    if let Offer::Granted(owner) = offer(run) {
+        resume_page_keys_for_owner(run, &owner)?;
+    }
+    Ok(())
+}
+
+fn resume_page_keys_for_owner(run: &Path, owner: &ViewportOwner) -> io::Result<()> {
+    if live_viewport_owner(run, Path::new("/proc")).is_some_and(|live| &live.owner == owner) {
+        PageKeyFence::new(&owner.viewport_path(run)).resume()?;
+    }
+    Ok(())
 }
 
 fn read_minimum(path: &Path) -> u64 {
@@ -354,6 +385,7 @@ fn abort_output(failed: &mut bool, ready: &ReadyViewport, panel: &mut impl Panel
         panel.grab_touch(false);
         panel.redraw_app(&ready.owner);
         panel.freeze(&ready.owner, false);
+        panel.resume_page_keys(&ready.owner);
     }
 }
 
@@ -379,6 +411,10 @@ impl Captured {
             }
             // Survive a Launcher restart between the first write and restore.
             if !panel.set_minimum(&ready.owner, Some(generation.checked_add(1)?)) {
+                return None;
+            }
+            if !panel.hold_page_keys(&ready.owner) {
+                panel.set_minimum(&ready.owner, None);
                 return None;
             }
             Some(Self {
@@ -420,6 +456,7 @@ impl Captured {
         }
         panel.grab_touch(false);
         panel.freeze(&ready.owner, false);
+        panel.resume_page_keys(&ready.owner);
         restored
     }
 }
@@ -831,6 +868,8 @@ mod tests {
         restored: usize,
         shows: usize,
         sleep_shows: usize,
+        keys_held: Cell<bool>,
+        key_resumes: Cell<usize>,
         redraws: Cell<usize>,
         redraws_while_stopped: Cell<usize>,
         minimum: Option<(ViewportOwner, u64)>,
@@ -856,6 +895,8 @@ mod tests {
                 restored: 0,
                 shows: 0,
                 sleep_shows: 0,
+                keys_held: Cell::new(false),
+                key_resumes: Cell::new(0),
                 redraws: Cell::new(0),
                 redraws_while_stopped: Cell::new(0),
                 minimum: None,
@@ -877,6 +918,24 @@ mod tests {
                     .record
                     .as_ref()
                     .is_some_and(|ready| &ready.owner == owner)
+        }
+
+        fn hold_page_keys(&self, owner: &ViewportOwner) -> bool {
+            assert!(self.owner_stopped(owner));
+            self.keys_held.set(true);
+            true
+        }
+
+        fn resume_page_keys(&self, owner: &ViewportOwner) {
+            if self
+                .record
+                .as_ref()
+                .is_some_and(|ready| &ready.owner == owner)
+            {
+                assert!(!self.stopped);
+                assert!(self.keys_held.replace(false));
+                self.key_resumes.set(self.key_resumes.get() + 1);
+            }
         }
 
         fn ready(&self, minimum: u64, stopped: bool) -> Option<ReadyViewport> {
@@ -1231,7 +1290,8 @@ mod tests {
                     surface.apply(reaction, &mut layer, &mut panel, &status);
                     assert_eq!(layer.is_open(), i == 0);
                 }
-                assert!(!panel.stopped && !panel.grabbed);
+                assert!(!panel.stopped && !panel.grabbed && !panel.keys_held.get());
+                assert_eq!(panel.key_resumes.get(), 1);
                 assert_eq!(panel.restored, 1);
                 assert_eq!(panel.minimum(&ready.owner), 0);
                 assert_eq!(panel.pixels, panel.original);
@@ -1407,7 +1467,8 @@ mod tests {
         abort_output(&mut failed, &old, &mut panel);
         abort_output(&mut failed, &old, &mut panel);
         layer.abandon();
-        assert!(failed && !panel.grabbed && !panel.stopped);
+        assert!(failed && !panel.grabbed && !panel.stopped && !panel.keys_held.get());
+        assert_eq!(panel.key_resumes.get(), 1);
         assert_eq!(panel.redraws.get(), 1);
         assert_eq!(panel.redraws_while_stopped.get(), 1);
         assert_eq!(panel.restored, 0);

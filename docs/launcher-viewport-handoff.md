@@ -24,6 +24,13 @@ changes require a fresh app draw. An interrupted write releases the app and
 touch capture, requests a fresh app frame when storage is available, and
 discards the old capture.
 
+The overlay holds Reader's page inputs in a separate per-run marker. After
+Launcher resumes Reader, the marker records a monotonic cutoff. Reader
+accepts a timed page press only when its kernel timestamp is later than
+that cutoff and its generation matches the visible frame. The supervisor
+seals the same cutoff after a Launcher crash. The shared gpio-keys device
+remains available to the Kindle's power handling.
+
 A per-run watermark quarantines the old ready generation before any
 overlay or stock takeover can cover it. Exact restoration clears the
 watermark. When a newer app generation is ready, Launcher can accept that
@@ -44,7 +51,7 @@ Launcher grid.
 
 ## Verification and activation
 
-Use a temporary local Tools checkout at `4f28eb6` under `tools/` and run
+Use a temporary local Tools checkout at `0dca2a7` under `tools/` and run
 `cargo test --locked --workspace --features viewport-handoff`. The
 shipped build uses the committed Tools pin. Run
 `sh tests/supervisor-test.sh` to check correct offer eligibility, the
@@ -65,8 +72,11 @@ viewport protocol and Oasis validation of the following behavior.
   appearance changes, Power cancellation, and return to the same page.
 - Verify that physical page buttons work in the overlay and that any
   presses during the overlay do not page Reader on resume. The simulated
-  mapping covers the Launcher queue. The Kindle's separate evdev queue
-  and power-button path still require physical verification.
+  mapping and mock timestamp cases cover event processing. The device log
+  must show no "page key timestamps are unavailable" message, and the
+  shared gpio-keys power path must still work. If the Kindle does not
+  support the evdev monotonic clock, keep the experiment off for overlay
+  use involving physical page keys.
 - Verify reader page and key behavior after stock sleep and custom
   wallpaper sleep, after USB drive mount/eject, and after overlapping
   sleep and USB. Verify that the expected artwork remains visible until

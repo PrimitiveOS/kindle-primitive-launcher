@@ -649,7 +649,8 @@ clear_app_turn() {
     rm -f "$APP_TURN_OWNER" "$APP_TURN_OWNER.tmp" "$APP_VIEWPORT_OFFER" "$APP_VIEWPORT_OFFER.tmp"
     if [ -n "${app_turn_dir:-}" ]; then
         rm -f "$app_turn_dir/turn" "$app_turn_dir/turn.tmp" "$app_turn_dir/viewport" "$app_turn_dir/viewport.tmp" \
-            "$app_turn_dir/launcher-occluded" "$app_turn_dir/launcher-occluded.tmp"
+            "$app_turn_dir/launcher-occluded" "$app_turn_dir/launcher-occluded.tmp" \
+            "$app_turn_dir/launcher-page-key-cutoff" "$app_turn_dir/launcher-page-key-cutoff.tmp"
         rmdir "$app_turn_dir" 2>/dev/null || :
         app_turn_dir=
     fi
@@ -747,6 +748,9 @@ system_layer_ended() {
     rm -f "$LAUNCHER_PID" "$LAUNCHER_STATUS"
     # The launcher may have ended with the app frozen under quick settings.
     kill -CONT -- "-$1" 2>/dev/null || kill -CONT "$1" 2>/dev/null
+    if [ -f "$APP_VIEWPORT_OFFER" ]; then
+        "$RUN/kl-launcher" --resume-viewport-page-keys >> "$LOG_OUT" 2>&1 || :
+    fi
     if [ "$lrc" -eq 0 ]; then
         log "the Kindle UI was requested over the app; closing the app"
         launcher_rc=0
