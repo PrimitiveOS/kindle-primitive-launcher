@@ -12,6 +12,7 @@ mod bootstrap;
 mod clock_sync;
 mod management;
 mod power;
+mod usage;
 mod system_layer;
 mod transfer;
 mod wallpaper;
@@ -232,6 +233,9 @@ fn main() {
 
     let mut settings_path = dir.join("settings.txt");
     let mut settings = Settings::load(&settings_path);
+    // Battery use: the screen is on at start (the launcher is running), and the day's totals are kept in usage.txt.
+    let mut usage_rec = usage::Recorder::load(&dir, now_secs());
+    usage_rec.screen_on(now_secs());
     // The owner's screen timeout goes to the Kindle's own power setting at start, and is kept alive while it is never.
     device::set_screen_timeout(settings.screen_timeout);
     let mut keep_awake_at = std::time::Instant::now();
@@ -561,6 +565,10 @@ fn main() {
             Ev::Tick => {
                 let now = now_secs();
                 let _ = write_atomic(&run.join("heartbeat"), &now.to_string());
+                let app_pid = std::fs::read_to_string(run.join("app.pid")).ok().and_then(|text| text.trim().parse::<i32>().ok());
+                usage_rec.sample_cpu(app_pid);
+                usage_rec.save_if_due(now);
+                status.usage = usage::summary_lines(usage_rec.log(), now);
                 // "Never" keeps the screen on: the Kindle's idle timer is refreshed about once a minute (not while charging).
                 if settings.screen_timeout == 0 && keep_awake_at.elapsed() >= Duration::from_secs(60) {
                     keep_awake_at = std::time::Instant::now();
@@ -667,6 +675,7 @@ fn main() {
             }
             Ev::AppEnded => {
                 if app_session.take().is_some() {
+                    usage_rec.app_ended(now_secs());
                     log("system layer: the app ended; the launcher takes the screen back");
                     renderer.set_backdrop(None);
                     input::grab_touch(false);
@@ -686,6 +695,11 @@ fn main() {
                 }
             }
             Ev::Input(input) => {
+                match input {
+                    Input::Sleep => usage_rec.screen_off(now_secs()),
+                    Input::Wake => usage_rec.screen_on(now_secs()),
+                    _ => {}
+                }
                 // An app is in front: its input is its own, except the swipe that opens quick settings and the power
                 // events. For those the app is frozen and its screen saved, and the launcher draws again.
                 if let Some(session) = app_session.as_mut().filter(|s| s.in_front()) {
@@ -945,6 +959,7 @@ fn main() {
                 if system_layer_on && system_layer::request_launch(&run) {
                     log("system layer: the supervisor runs the app; the launcher stays");
                     app_session = Some(system_layer::AppSession::new());
+                    usage_rec.app_started(&usage::app_name(&run), now_secs());
                     display.set_paused(true);
                     ui.pressed = None;
                     system_layer::watch(run.clone(), tx.clone());
