@@ -232,6 +232,9 @@ fn main() {
 
     let mut settings_path = dir.join("settings.txt");
     let mut settings = Settings::load(&settings_path);
+    // The owner's screen timeout goes to the Kindle's own power setting at start, and is kept alive while it is never.
+    device::set_screen_timeout(settings.screen_timeout);
+    let mut keep_awake_at = std::time::Instant::now();
     // With automatic rotation the saved turn can be stale (it is only saved on manual changes): read the
     // device's turn now, so the first screen is drawn the right way up.
     if settings.auto_rotation {
@@ -558,6 +561,11 @@ fn main() {
             Ev::Tick => {
                 let now = now_secs();
                 let _ = write_atomic(&run.join("heartbeat"), &now.to_string());
+                // "Never" keeps the screen on: the Kindle's idle timer is refreshed about once a minute (not while charging).
+                if settings.screen_timeout == 0 && keep_awake_at.elapsed() >= Duration::from_secs(60) {
+                    keep_awake_at = std::time::Instant::now();
+                    device::refresh_screen_timeout();
+                }
                 let clock_sync_result = clock_sync.as_mut().and_then(clock_sync::ClockSync::poll);
                 if let Some(result) = clock_sync_result {
                     clock_sync = None;
@@ -1200,13 +1208,14 @@ fn main() {
                     display.show(renderer.draw(&ui, &status), &settings, false);
                     continue;
                 }
-                if matches!(cmd, DeviceCmd::ToggleLargeText | DeviceCmd::ToggleHighContrast | DeviceCmd::ToggleAnimation | DeviceCmd::ToggleDarkMode) {
+                if matches!(cmd, DeviceCmd::ToggleLargeText | DeviceCmd::ToggleHighContrast | DeviceCmd::ToggleAnimation | DeviceCmd::ToggleDarkMode | DeviceCmd::CycleScreenTimeout) {
                     let mut updated = settings.clone();
                     match cmd {
                         DeviceCmd::ToggleLargeText => updated.large_text = !updated.large_text,
                         DeviceCmd::ToggleHighContrast => updated.high_contrast = !updated.high_contrast,
                         DeviceCmd::ToggleAnimation => updated.animation = !updated.animation,
                         DeviceCmd::ToggleDarkMode => updated.dark_mode = !updated.dark_mode,
+                        DeviceCmd::CycleScreenTimeout => updated.screen_timeout = kl_core::settings::next_screen_timeout(updated.screen_timeout),
                         _ => unreachable!(),
                     }
                     ui.notice = if from_mirror {
@@ -1214,7 +1223,7 @@ fn main() {
                     } else if bootstrapping_store.is_some() {
                         Some("Wait for the Store to finish installing.".into())
                     } else {
-                        let result = if matches!(cmd, DeviceCmd::ToggleLargeText | DeviceCmd::ToggleHighContrast) {
+                        let result = if matches!(cmd, DeviceCmd::ToggleLargeText | DeviceCmd::ToggleHighContrast | DeviceCmd::CycleScreenTimeout) {
                             power.write_leased(&Settings::preferences_path(&settings_path), &updated.preferences_text())
                         } else {
                             power.write_leased(&settings_path, &updated.base_text())
@@ -1226,6 +1235,10 @@ fn main() {
                                 status.high_contrast = settings.high_contrast;
                                 status.animation = settings.animation;
                                 status.dark_mode = settings.dark_mode;
+                                status.screen_timeout = settings.screen_timeout;
+                                if cmd == DeviceCmd::CycleScreenTimeout {
+                                    device::set_screen_timeout(settings.screen_timeout);
+                                }
                                 None
                             }
                             Err(error) => Some(format!("Could not save appearance settings. {error}")),
@@ -1459,6 +1472,8 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
         DeviceCmd::Restart => device::system_command("reboot"),
         DeviceCmd::PowerOff => device::system_command("halt -f -p"),
         DeviceCmd::RestartLauncher => device::restart_launcher(),
+        // Handled with the other saved settings, where the change is written and applied.
+        DeviceCmd::CycleScreenTimeout => {}
         DeviceCmd::QuitAppAndRestart => {
             system_layer::end_app(run);
             device::restart_launcher();
