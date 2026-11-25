@@ -93,10 +93,9 @@ fn show_wallpaper_demo(renderer: &mut Renderer, ui: &mut Ui, status: &Status, ou
 
     ui.set_wallpapers(WallpaperSettings { images: vec![filename], ..WallpaperSettings::default() });
     ui.screen = Screen::Settings;
-    let display = ui.layout.settings_home_rows(0).into_iter()
-        .find(|&(page, _)| page == Page::Display).expect("Display settings row").1;
-    ui.handle(tap(display));
-    ui.handle(tap(row(ui, Page::Display, Row::WallpaperLink)));
+    let wallpaper = ui.layout.settings_home_rows(0).into_iter()
+        .find(|&(page, _)| page == Page::Wallpaper).expect("Wallpaper settings row").1;
+    ui.handle(tap(wallpaper));
     assert_eq!(ui.screen, Screen::Page(Page::Wallpaper));
 
     for (target, picture, name) in [
