@@ -68,7 +68,7 @@ jobs:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: armv7-unknown-linux-musleabihf,armv7-unknown-linux-musleabi
+          targets: armv7-unknown-linux-musleabihf
       - uses: Swatinem/rust-cache@v2
       # zig and a prebuilt cargo-zigbuild from setup actions, not pip or a source build: a pip install of ziglang
       # can be refused on newer runner images (the first v0.2.6 release run failed in this step).
@@ -84,17 +84,6 @@ jobs:
         run: cargo zigbuild --locked --release -p kl-launcher --target armv7-unknown-linux-musleabihf
       - name: Check it is an ARM binary
         run: file target/armv7-unknown-linux-musleabihf/release/kl-launcher | grep -q ARM
-      - name: Build the soft-float device binary
-        run: cargo zigbuild --locked --release -p kl-launcher --target armv7-unknown-linux-musleabi
-      - name: Stage the soft-float candidate
-        run: |
-          sh scripts/stage.sh armel "$RUNNER_TEMP/armel-stage"
-          tar -C "$RUNNER_TEMP/armel-stage" -czf "$RUNNER_TEMP/launcher-armel-stage.tar.gz" .
-      - name: Keep the unpacked soft-float candidate
-        uses: actions/upload-artifact@v4
-        with:
-          name: primitive-launcher-armel-stage
-          path: ${{ runner.temp }}/launcher-armel-stage.tar.gz
       - name: Package (dry run)
         run: sh scripts/package-release.sh
       - name: Keep the package
