@@ -3,6 +3,14 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.7.0
+
+- Settings is grouped as on iPhone: Network, Display (with Wallpaper and Sleep), Battery, Applications, and Device.
+- Battery: the 24-hour chart is only battery. A usage card below it shows the screen-on time, the number of wakes, and the most used apps for the last seven days (an estimate, not a battery percentage). Readings are saved every five minutes.
+- Sleep: "Sleep after" sets how long the screen stays on, from 15 seconds to 10 minutes or never. It is also a quick-settings tile.
+- Hold both page-turn buttons for two seconds to restart the launcher (after a confirmation). The app you have open closes.
+- The launcher no longer shows a startup picture; the stock boot screen stays.
+
 ## 0.6.22
 
 - The device name page says Save, and its top button says Cancel (it leaves without saving). An unset device name shows "Tap to set".
