@@ -8,7 +8,6 @@ cd "$ROOT"
 ARCH=${1:-armhf}
 case "$ARCH" in
     armhf) TARGET=armv7-unknown-linux-musleabihf ;;
-    armel) TARGET=armv7-unknown-linux-musleabi ;;
     *) echo "unsupported package architecture: $ARCH" >&2; exit 1 ;;
 esac
 
@@ -16,16 +15,7 @@ BIN=${CARGO_TARGET_DIR:-target}/$TARGET/release/kl-launcher
 [ -x "$BIN" ] || { echo "build the device binary first: $BIN" >&2; exit 1; }
 file "$BIN" | grep -q 'ELF.*ARM' || { echo "not an ARM ELF binary: $BIN" >&2; exit 1; }
 
-case "$ARCH" in
-    armhf) HELPERS=assets/device/armv7 ;;
-    armel)
-        HELPERS=build/device/armel
-        recipe=scripts/build-armel-ssh.sh
-        if [ ! -x "$HELPERS/dropbear" ] || [ ! -r "$HELPERS/MUSL-LICENSE.txt" ] || [ "$recipe" -nt "$HELPERS/dropbear" ]; then
-            sh "$recipe"
-        fi
-        ;;
-esac
+HELPERS=assets/device/armv7
 
 if [ "$#" -ge 2 ]; then
     STAGE=$2
@@ -44,10 +34,7 @@ for f in supervisor.sh ssh.sh dns.sh boot.sh holder.lua run-koreader.sh apps.tom
 done
 # Ship the SSH program and its licences, with no generated host key or user configuration.
 install -m 755 "$HELPERS/dropbear" "$L/ssh/bin/dropbear"
-case "$ARCH" in
-    armhf) cp "$HELPERS/libz.so.1" "$L/ssh/lib/" ;;
-    armel) cp "$HELPERS/MUSL-LICENSE.txt" "$L/ssh/licenses/" ;;
-esac
+cp "$HELPERS/libz.so.1" "$L/ssh/lib/"
 cp assets/device/licenses/DROPBEAR-LICENSE.txt assets/device/licenses/ZLIB-LICENSE.txt "$L/ssh/licenses/"
 cp assets/fonts/NotoSans-Regular.ttf assets/fonts/NotoSans-Bold.ttf assets/fonts/NOTO-LICENSE.txt "$L/fonts/"
 printf 'PNG files here can be chosen as app icons: long-press an app, then Change icon.\n' > "$L/icons/README.txt"

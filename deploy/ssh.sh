@@ -44,7 +44,7 @@ case "$1" in
         # The server runs from a copy in tmpfs, with / as its directory: nothing of it may hold /mnt/us, which the Kindle
         # unmounts to show its drive on a computer (and whatever still holds it is killed).
         mkdir -p "$TMP_SSH/lib" && cp "$BIN/dropbear" "$TMP_SSH/dropbear" || { echo "could not copy the server to $TMP_SSH"; exit 1; }
-        # The ARMEL helper links zlib statically.
+        # The helper loads zlib from the copy shipped beside it.
         if [ -f "$LIB/libz.so.1" ]; then
             cp "$LIB/libz.so.1" "$TMP_SSH/lib/" || { echo "could not copy the server library to $TMP_SSH"; exit 1; }
         fi
