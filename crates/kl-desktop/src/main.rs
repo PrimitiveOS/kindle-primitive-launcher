@@ -334,6 +334,46 @@ fn main() {
     shot(&mut renderer, &ui, "password-hidden");
     ui.wifi_hidden = false;
     ui.network_name = primitive_keyboard::Editor::new(32);
+    // Bluetooth (made-up names and placeholder addresses, never a real device): the page with devices, one device
+    // paired and connected, a nearby one, the pairing confirmation, the quick settings and the status bar with both icons.
+    let bt = |address: &str, name: &str, paired: bool, connected: bool, rssi: Option<i32>| kl_core::bluetooth::Device {
+        name: name.into(),
+        address: kl_core::bluetooth::BdAddr::parse(address).expect("demo address"),
+        paired,
+        connected,
+        discovered: !paired,
+        rssi,
+        class: Some(0x0434),
+    };
+    let demo_bt = kl_core::bluetooth::BtInfo {
+        on: true,
+        devices: vec![
+            bt("AA:BB:CC:DD:EE:02", "Headphones X", true, true, Some(-40)),
+            bt("AA:BB:CC:DD:EE:03", "Speaker Y", true, false, None),
+            bt("AA:BB:CC:DD:EE:04", "Earbuds Z", false, false, Some(-70)),
+        ],
+    };
+    ui.set_bluetooth(demo_bt);
+    let bt_on = Status { bluetooth_on: true, bluetooth_connected: Some("Headphones X".into()), ..demo_status() };
+    ui.screen = kl_core::Screen::Page(kl_core::layout::Page::Bluetooth);
+    write_png(&out.join("bluetooth-devices.png"), W, H, &renderer.draw(&ui, &bt_on));
+    ui.bt_target = kl_core::bluetooth::BdAddr::parse("AA:BB:CC:DD:EE:02");
+    ui.screen = kl_core::Screen::BluetoothDevice;
+    write_png(&out.join("bluetooth-device-connected.png"), W, H, &renderer.draw(&ui, &bt_on));
+    ui.bt_target = kl_core::bluetooth::BdAddr::parse("AA:BB:CC:DD:EE:04");
+    write_png(&out.join("bluetooth-device-nearby.png"), W, H, &renderer.draw(&ui, &bt_on));
+    ui.ask_bluetooth_confirmation("417 902".into());
+    write_png(&out.join("bluetooth-confirm.png"), W, H, &renderer.draw(&ui, &bt_on));
+    ui.screen = kl_core::Screen::QuickSettings;
+    write_png(&out.join("quick-settings-bluetooth.png"), W, H, &renderer.draw(&ui, &bt_on));
+    ui.screen = kl_core::Screen::Home;
+    let both = Status { bluetooth_on: true, bluetooth_connected: Some("Headphones X".into()), ssh: true, ..demo_status() };
+    write_png(&out.join("status-bluetooth-ssh.png"), W, H, &renderer.draw(&ui, &both));
+    // Without SSH, Bluetooth takes the slot next to Wi-Fi.
+    let bt_only = Status { bluetooth_on: true, bluetooth_connected: Some("Headphones X".into()), ..demo_status() };
+    write_png(&out.join("status-bluetooth.png"), W, H, &renderer.draw(&ui, &bt_only));
+    ui.set_bluetooth(kl_core::bluetooth::BtInfo::default());
+    ui.bt_target = None;
     ui.screen = kl_core::Screen::Settings;
     let swipe = |dy| Input::Swipe { dx: 0.0, dy, start_y: H as f32 / 2.0 };
     assert_eq!(ui.settings_scroll, 0);
@@ -419,6 +459,8 @@ fn main() {
     ui.handle(Input::Swipe { dx: 0.0, dy: 400.0, start_y: 40.0 });
     shot(&mut renderer, &ui, "quick-settings");
     write_png(&out.join("dark-quick-settings.png"), W, H, &renderer.draw(&ui, &Status { dark_mode: true, ..demo_status() }));
+    // The SSH icon beside the Wi-Fi icon in the quick settings header.
+    write_png(&out.join("quick-settings-ssh.png"), W, H, &renderer.draw(&ui, &Status { ssh: true, ..demo_status() }));
     ui.screen = kl_core::Screen::Home;
     let mut off = demo_status();
     off.wifi_on = false;

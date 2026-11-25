@@ -3,6 +3,25 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.8.3
+
+- While Bluetooth audio is connected, the status bar and quick settings show headphones beside the Bluetooth icon.
+- The own Bluetooth audio work (A2DP) is removed; audio uses the Kindle's own player (mplay), as the test sound does.
+
+## 0.8.2
+
+- Bluetooth: a Test sound button on the Bluetooth page plays a short tone through the connected headphones. It asks you to connect headphones first when none are connected.
+
+## 0.8.1
+
+- Bluetooth reads the Kindle's own device lists as the stack writes them: paired devices show their names, and their class (audio, for headphones and speakers) is recognised.
+
+## 0.8.0
+
+- Bluetooth: Settings › Network › Bluetooth turns the Kindle's Bluetooth on and off, finds headphones and speakers, and pairs, connects, disconnects and forgets them. Keyboards are not supported yet.
+- Bluetooth is a quick-settings tile. While it is on, a Bluetooth icon shows in the status bar beside Wi-Fi. The launcher never turns Bluetooth on by itself, and a scan runs when the Bluetooth page opens.
+- The SSH server shows as a prompt icon beside the Wi-Fi icon, in the status bar and in quick settings, while it runs. It replaces the SSH text label in the status bar.
+
 ## 0.7.0
 
 - Settings is grouped as on iPhone: Network, Display (with Wallpaper and Sleep), Battery, Applications, and Device.

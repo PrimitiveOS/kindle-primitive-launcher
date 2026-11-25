@@ -81,6 +81,93 @@ fn start_wifi_forget(tx: Sender<Ev>, name: String) {
     });
 }
 
+/// The name of a device for a notice: its own name, from the list read at the time.
+fn device_name(info: &kl_core::bluetooth::BtInfo, address: &kl_core::bluetooth::BdAddr) -> String {
+    info.find(address).map(|d| d.label().to_string()).unwrap_or_else(|| "the device".into())
+}
+
+/// Bluetooth on or off on a thread: the stack takes seconds to start, or to restart. On, a scan follows and the
+/// list is sent. Either way the new state goes to the event loop.
+fn start_bt_toggle(tx: Sender<Ev>, on: bool) {
+    thread::spawn(move || {
+        if on {
+            if device::bluetooth::set_on(true) {
+                let _ = tx.send(Ev::Bluetooth(device::bluetooth::scan_and_list()));
+            } else {
+                let _ = tx.send(Ev::BluetoothNotice("Bluetooth did not turn on. Try again.".into()));
+                let _ = tx.send(Ev::Bluetooth(device::bluetooth::info()));
+            }
+        } else if device::bluetooth::set_on(false) {
+            let _ = tx.send(Ev::Bluetooth(kl_core::bluetooth::BtInfo::default()));
+        } else {
+            let _ = tx.send(Ev::BluetoothNotice("Bluetooth did not turn off. Try again.".into()));
+            let _ = tx.send(Ev::Bluetooth(device::bluetooth::info()));
+        }
+    });
+}
+
+/// Scan for nearby devices on a thread (about twelve seconds) and send the list.
+fn start_bt_scan(tx: Sender<Ev>) {
+    thread::spawn(move || {
+        let _ = tx.send(Ev::Bluetooth(device::bluetooth::scan_and_list()));
+    });
+}
+
+/// Read the Bluetooth state at start, so the status bar shows it at once.
+fn start_bt_refresh(tx: Sender<Ev>) {
+    thread::spawn(move || {
+        let _ = tx.send(Ev::Bluetooth(device::bluetooth::info()));
+    });
+}
+
+/// Pair with a device on a thread. The stack's confirmation (the code it shows) goes to the event loop as it comes;
+/// the result is the notice, and the list is read again.
+fn start_bt_pair(tx: Sender<Ev>, address: kl_core::bluetooth::BdAddr) {
+    thread::spawn(move || {
+        let steps = tx.clone();
+        let result = device::bluetooth::pair(&address, |step| {
+            if let device::bluetooth::PairStep::Confirm(code) = step {
+                let _ = steps.send(Ev::BluetoothConfirm(code));
+            }
+        });
+        let info = device::bluetooth::info();
+        let message = match result {
+            Ok(()) => format!("Paired with {}", device_name(&info, &address)),
+            Err(error) => error,
+        };
+        let _ = tx.send(Ev::BluetoothNotice(message));
+        let _ = tx.send(Ev::Bluetooth(info));
+    });
+}
+
+/// The owner's answer to a pairing confirmation, sent on a thread.
+fn start_bt_confirm(tx: Sender<Ev>, yes: bool) {
+    thread::spawn(move || {
+        if !device::bluetooth::confirm(yes) {
+            let _ = tx.send(Ev::BluetoothNotice("The answer did not reach the stack. Try again.".into()));
+        }
+    });
+}
+
+/// Connect, disconnect or forget a device on a thread. The name is read before the change (a forgotten device is no
+/// longer listed), and the notice says `verb` and the name.
+fn start_bt_device(
+    tx: Sender<Ev>,
+    address: kl_core::bluetooth::BdAddr,
+    verb: &'static str,
+    act: fn(&kl_core::bluetooth::BdAddr) -> Result<(), String>,
+) {
+    thread::spawn(move || {
+        let name = device_name(&device::bluetooth::info(), &address);
+        let message = match act(&address) {
+            Ok(()) => format!("{verb} {name}"),
+            Err(error) => error,
+        };
+        let _ = tx.send(Ev::BluetoothNotice(message));
+        let _ = tx.send(Ev::Bluetooth(device::bluetooth::info()));
+    });
+}
+
 /// Scan for Wi-Fi on a thread and send the result to the event loop.
 fn start_wifi_scan(tx: Sender<Ev>) {
     start_wifi_scan_after(tx, 0);
@@ -364,6 +451,7 @@ fn main() {
         let t = tx.clone();
         thread::spawn(move || device::power_loop(t));
     }
+    start_bt_refresh(tx.clone());
     // Holding both page-turn buttons for two seconds restarts the launcher (after confirmation).
     let origin = std::time::Instant::now();
     let mut page_chord = kl_core::page_chord::PageChord::default();
@@ -469,6 +557,20 @@ fn main() {
             Ev::WifiResult { ok, message } => {
                 ui.set_join_result(ok, message);
                 status = device::status(&settings);
+                Action::Redraw { full: false }
+            }
+            Ev::Bluetooth(info) => {
+                ui.set_bluetooth(info);
+                status = device::status(&settings);
+                Action::Redraw { full: false }
+            }
+            Ev::BluetoothNotice(message) => {
+                ui.set_bluetooth_notice(message);
+                status = device::status(&settings);
+                Action::Redraw { full: false }
+            }
+            Ev::BluetoothConfirm(code) => {
+                ui.ask_bluetooth_confirmation(code);
                 Action::Redraw { full: false }
             }
             Ev::StoreBootstrapped(result) => {
@@ -731,6 +833,7 @@ fn main() {
                 }
                 let before = ui.screen;
                 ui.display_support = status.display_support;
+                ui.ssh_shown = status.ssh;
                 let action = ui.handle(input);
                 if input == Input::Wake && before == Screen::Sleep && ui.usb != kl_core::Usb::Drive
                     && ui.wallpapers.sleep == WallpaperChoice::Rotate
@@ -1000,6 +1103,42 @@ fn main() {
                 start_wifi_forget(tx.clone(), name);
                 display.show(renderer.draw(&ui, &status), &settings, false);
             }
+            Action::ScanBluetooth => {
+                start_bt_scan(tx.clone());
+                display.show(renderer.draw(&ui, &status), &settings, false);
+            }
+            Action::PairBluetooth(address) => {
+                start_bt_pair(tx.clone(), address);
+                display.show(renderer.draw(&ui, &status), &settings, false);
+            }
+            Action::ConfirmBluetooth(yes) => {
+                start_bt_confirm(tx.clone(), yes);
+                display.show(renderer.draw(&ui, &status), &settings, false);
+            }
+            Action::ConnectBluetooth(address) => {
+                start_bt_device(tx.clone(), address, "Connected to", device::bluetooth::connect);
+                display.show(renderer.draw(&ui, &status), &settings, false);
+            }
+            Action::DisconnectBluetooth(address) => {
+                start_bt_device(tx.clone(), address, "Disconnected from", device::bluetooth::disconnect);
+                display.show(renderer.draw(&ui, &status), &settings, false);
+            }
+            Action::TestBluetoothSound => {
+                // The tone plays for about a second and a half: on a thread, so the screen keeps working.
+                let tx = tx.clone();
+                thread::spawn(move || {
+                    let message = match device::bluetooth::play_test_tone() {
+                        Ok(()) => "Test sound played.".to_string(),
+                        Err(error) => error,
+                    };
+                    let _ = tx.send(Ev::BluetoothNotice(message));
+                });
+                display.show(renderer.draw(&ui, &status), &settings, false);
+            }
+            Action::ForgetBluetooth(address) => {
+                start_bt_device(tx.clone(), address, "Forgot", device::bluetooth::forget);
+                display.show(renderer.draw(&ui, &status), &settings, false);
+            }
             Action::SetDeviceName(name) => {
                 ui.notice = Some(match save_device_name(&name, &settings_path, &mut settings) {
                     Ok(()) => {
@@ -1108,6 +1247,11 @@ fn main() {
                     display.show_region(frame, area, &settings);
                 }
                 std::process::exit(EXIT_KINDLE_UI);
+            }
+            Action::Device(DeviceCmd::ToggleBluetooth) => {
+                // The stack takes seconds to start or restart: it runs on a thread, and its state comes back as an event.
+                start_bt_toggle(tx.clone(), !status.bluetooth_on);
+                display.show(renderer.draw(&ui, &status), &settings, false);
             }
             Action::Device(cmd) => {
                 if cmd == DeviceCmd::RefreshTimeZone {
@@ -1469,6 +1613,8 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
         DeviceCmd::Light(step) => device::set_light((status.light as i32 + step).clamp(0, device::LEVEL_MAX as i32) as u32),
         DeviceCmd::Warmth(step) => device::set_warmth((status.warmth as i32 + step).clamp(0, device::LEVEL_MAX as i32) as u32),
         DeviceCmd::ToggleWifi => device::set_wifi(!status.wifi_on),
+        // Bluetooth takes seconds, so the event loop starts it on a thread (see `start_bt_toggle`).
+        DeviceCmd::ToggleBluetooth => {}
         DeviceCmd::ToggleSsh => device::set_ssh(&dir.to_string_lossy(), !status.ssh),
         DeviceCmd::ToggleDns => device::set_public_dns(&dir.to_string_lossy(), !status.public_dns),
         DeviceCmd::Restart => device::system_command("reboot"),
