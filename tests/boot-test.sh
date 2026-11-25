@@ -21,7 +21,6 @@ setup() {
     cat > "$KL_DIR/supervisor.sh" <<'SUP'
 #!/bin/sh
 echo "supervisor ran" >> "$STATE/calls"
-echo "${KL_SHOW_STARTUP_WALLPAPER:-0}" > "$STATE/startup-wallpaper"
 if [ "$(cat "$STATE/sup-mode" 2>/dev/null)" = healthy ]; then sleep 3; fi
 exit 1
 SUP
@@ -49,7 +48,6 @@ check() {
 echo "test: a launcher that cannot stay up disables autostart on the third boot"
 setup
 boot; check "boot 1 started the launcher" '[ "$(count_runs)" = 1 ]'
-check "automatic start requests a startup wallpaper" '[ "$(cat "$STATE/startup-wallpaper")" = 1 ]'
 check "boot 1 counted" '[ "$(cat "$KL_DIR/boot-attempts")" = 1 ]'
 reboot; boot; check "boot 2 started the launcher" '[ "$(count_runs)" = 2 ]'
 reboot; boot

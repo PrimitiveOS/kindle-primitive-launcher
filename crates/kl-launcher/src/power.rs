@@ -13,9 +13,9 @@ use kl_kindle::{device, log};
 
 const FILE_NAME: &str = "battery-history.txt";
 const LIGHT_BEFORE_MODE: &str = "low-power-light";
-const MAX_SAMPLES: usize = 256;
-const MAX_FILE_BYTES: u64 = 16 * 1024;
-const OBSERVE_EVERY: u64 = 15 * 60;
+const MAX_SAMPLES: usize = 300;
+const MAX_FILE_BYTES: u64 = 32 * 1024;
+const OBSERVE_EVERY: u64 = 5 * 60;
 const MIN_GAP_SECS: u64 = 60;
 const SAVE_EVERY: Duration = Duration::from_secs(120);
 

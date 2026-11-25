@@ -80,7 +80,7 @@ killall -q -s KILL animator 2>/dev/null || true
 killall -q -s KILL BootActionsApplication 2>/dev/null || true
 cp "$supervisor" "$RUN/supervisor.sh" 2>/dev/null || exit 0
 log "boot $n: starting the launcher"
-KL_SHOW_STARTUP_WALLPAPER=1 sh "$RUN/supervisor.sh" >> "$LOG" 2>&1 &
+sh "$RUN/supervisor.sh" >> "$LOG" 2>&1 &
 sp=$!
 
 # Stays up for HEALTHY seconds: the launcher is working, so the next boot starts again from zero.

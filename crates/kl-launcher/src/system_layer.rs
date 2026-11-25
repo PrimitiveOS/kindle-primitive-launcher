@@ -94,9 +94,28 @@ pub fn watch(run: PathBuf, tx: Sender<Ev>) {
     });
 }
 
-/// Freeze the app (`true`) while a system screen is up, or let it run again (`false`).
+/// Close the open app the way the Kindle UI does: TERM to its process group. The app session then ends.
+pub fn end_app(run: &Path) {
+    signal_app(run, libc::SIGTERM);
+}
+
+/// Freeze the app (`true`) while a system screen is up, or let it run again (`false`). Each change is logged with the
+/// app's process state (`T` stopped, `S` sleeping or running), so a frozen app that does not come back can be seen in the log.
 pub fn freeze(run: &Path, on: bool) {
     signal_app(run, if on { libc::SIGSTOP } else { libc::SIGCONT });
+    let pid = read_pid(&run.join("app.pid"));
+    let state = pid.map(process_state).unwrap_or('-');
+    log(&format!("system layer: {} app pid {} (state {state})", if on { "froze" } else { "resumed" }, pid.unwrap_or(0)));
+}
+
+/// The state letter of a process from `/proc/<pid>/stat` (the field after the command name), or `?` if unreadable.
+fn process_state(pid: i32) -> char {
+    fs::read_to_string(format!("/proc/{pid}/stat")).map(|stat| state_letter(&stat)).unwrap_or('?')
+}
+
+/// The state letter in the text of `/proc/<pid>/stat`: the first character after the command name's closing parenthesis.
+fn state_letter(stat: &str) -> char {
+    stat.rsplit(')').next().and_then(|rest| rest.trim_start().chars().next()).unwrap_or('?')
 }
 
 /// Ask the app to draw its whole screen again (the theme changed while it was frozen). Only an app that declares
@@ -182,5 +201,18 @@ mod tests {
         assert!(!opens_quick_settings(Input::Swipe { dx: 10.0, dy: 400.0, start_y: 600.0 }, 120), "mid-screen is the app's");
         assert!(!opens_quick_settings(Input::Swipe { dx: 400.0, dy: 10.0, start_y: 20.0 }, 120), "sideways is the app's");
         assert!(!opens_quick_settings(Input::Tap(10.0, 10.0), 120));
+    }
+}
+
+#[cfg(test)]
+mod process_state_tests {
+    use super::state_letter;
+
+    #[test]
+    fn reads_the_state_letter_after_the_command_name() {
+        assert_eq!(state_letter("1234 (snake-kindle) S 1 1234 1234 0 -1"), 'S');
+        // A command name with spaces and a parenthesis still gives its state.
+        assert_eq!(state_letter("77 (my (odd) app) T 1 77 77 0 -1"), 'T');
+        assert_eq!(state_letter(""), '?');
     }
 }

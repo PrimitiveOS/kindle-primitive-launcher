@@ -697,7 +697,7 @@ start_launcher() {
     launcher_proc=
     rm -f "$LAUNCHER_PID" "$LAUNCHER_STATUS" "$LAUNCHER_STATUS.tmp"
     (
-        KL_SYSTEM_LAYER=1 KL_ATTACH_APP=$1 KL_SHOW_STARTUP_WALLPAPER=$startup_wallpaper KL_LAUNCHER_UPDATE_TRIAL=$trial KL_LAUNCHER_USB_LEASE=$launcher_can_lease "$RUN/kl-launcher" >> "$LOG_OUT" 2>&1 &
+        KL_SYSTEM_LAYER=1 KL_ATTACH_APP=$1 KL_LAUNCHER_UPDATE_TRIAL=$trial KL_LAUNCHER_USB_LEASE=$launcher_can_lease "$RUN/kl-launcher" >> "$LOG_OUT" 2>&1 &
         launcher=$!
         echo "$launcher" > "$LAUNCHER_PID"
         # A signal can make wait return early, so wait again until the launcher has really ended.
@@ -925,9 +925,6 @@ trap 'launcher_ended=yes' USR2
 crashes=""
 store_open_pending=no
 refresh_mode=verify
-# Only the initial launcher after the boot guard may draw a startup wallpaper.
-startup_wallpaper=${KL_SHOW_STARTUP_WALLPAPER:-0}
-unset KL_SHOW_STARTUP_WALLPAPER
 while :; do
     update_begin || break
     if ! refresh_files "$refresh_mode"; then

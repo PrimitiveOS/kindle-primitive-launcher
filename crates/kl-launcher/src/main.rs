@@ -12,6 +12,7 @@ mod bootstrap;
 mod clock_sync;
 mod management;
 mod power;
+mod usage;
 mod system_layer;
 mod transfer;
 mod wallpaper;
@@ -232,6 +233,12 @@ fn main() {
 
     let mut settings_path = dir.join("settings.txt");
     let mut settings = Settings::load(&settings_path);
+    // Battery use: the screen is on at start (the launcher is running), and the day's totals are kept in usage.txt.
+    let mut usage_rec = usage::Recorder::load(&dir, now_secs());
+    usage_rec.screen_on(now_secs());
+    // The owner's screen timeout goes to the Kindle's own power setting at start, and is kept alive while it is never.
+    device::set_screen_timeout(settings.screen_timeout);
+    let mut keep_awake_at = std::time::Instant::now();
     // With automatic rotation the saved turn can be stale (it is only saved on manual changes): read the
     // device's turn now, so the first screen is drawn the right way up.
     if settings.auto_rotation {
@@ -252,18 +259,8 @@ fn main() {
     }
 
     let wallpapers = wallpaper::load(&dir, settings.sleep_screen_launcher);
+    log(&format!("wallpapers at start: home {:?}, sleep {:?}, startup {:?}, {} pictures", wallpapers.home, wallpapers.sleep, wallpapers.startup, wallpapers.images.len()));
     settings.sleep_screen_launcher = wallpapers.sleep != WallpaperChoice::Default;
-    let mut startup_wallpaper_until = None;
-    if !from_mirror && std::env::var("KL_SHOW_STARTUP_WALLPAPER").as_deref() == Ok("1") {
-        if let Some(image) = wallpaper::saved_picture(&dir, WallpaperTarget::Startup, &wallpapers, &mut 0) {
-            // A startup image cannot by itself prove the Launcher update reached the app grid.
-            let mut splash = Display::open();
-            splash.show(image.pixels, &settings, true);
-            if splash.has_presented_frame() {
-                startup_wallpaper_until = Some(Instant::now() + Duration::from_millis(800));
-            }
-        }
-    }
 
     // Reviewable system changes recover in Store with its storage write lease.
     let mut recovery_problem = None;
@@ -367,6 +364,9 @@ fn main() {
         let t = tx.clone();
         thread::spawn(move || device::power_loop(t));
     }
+    // Holding both page-turn buttons for two seconds restarts the launcher (after confirmation).
+    let origin = std::time::Instant::now();
+    let mut page_chord = kl_core::page_chord::PageChord::default();
     {
         // The USB state, each second: an event is sent only when it changes.
         let t = tx.clone();
@@ -413,9 +413,6 @@ fn main() {
         log("system layer: started again over the running app");
     } else {
         let first = renderer.draw(&ui, &status);
-        if let Some(until) = startup_wallpaper_until {
-            thread::sleep(until.saturating_duration_since(Instant::now()));
-        }
         display.show(first, &settings, true);
         log(&format!("first screen after {} ms", started.elapsed().as_millis()));
     }
@@ -439,10 +436,30 @@ fn main() {
                 mark_trial_ready = false;
             }
         }
-        let Ok(ev) = rx.recv() else { break };
+        let ev = match page_chord.deadline() {
+            Some(at) => match rx.recv_timeout(std::time::Duration::from_millis(at.saturating_sub(origin.elapsed().as_millis() as u64))) {
+                Ok(ev) => ev,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ev::ChordTick,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            },
+            None => {
+                let Ok(ev) = rx.recv() else { break };
+                ev
+            }
+        };
         let previous_screen = ui.screen;
         let previous_usb = ui.usb;
         let action = match ev {
+            Ev::PageKey { code, down } => {
+                page_chord.key(code, down, origin.elapsed().as_millis() as u64);
+                Action::None
+            }
+            Ev::ChordTick => {
+                if page_chord.tick(origin.elapsed().as_millis() as u64) {
+                    let _ = tx.send(Ev::Input(Input::RestartHold));
+                }
+                Action::None
+            }
             Ev::Wifi(info) => {
                 ui.set_wifi(info);
                 // The Wi-Fi state (connected or not) is read again, so the rows show what the scan shows.
@@ -535,6 +552,15 @@ fn main() {
             Ev::Tick => {
                 let now = now_secs();
                 let _ = write_atomic(&run.join("heartbeat"), &now.to_string());
+                let app_pid = std::fs::read_to_string(run.join("app.pid")).ok().and_then(|text| text.trim().parse::<i32>().ok());
+                usage_rec.sample_cpu(app_pid);
+                usage_rec.save_if_due(now);
+                status.usage = usage::summary_lines(usage_rec.log(), now);
+                // "Never" keeps the screen on: the Kindle's idle timer is refreshed about once a minute (not while charging).
+                if settings.screen_timeout == 0 && keep_awake_at.elapsed() >= Duration::from_secs(60) {
+                    keep_awake_at = std::time::Instant::now();
+                    device::refresh_screen_timeout();
+                }
                 let clock_sync_result = clock_sync.as_mut().and_then(clock_sync::ClockSync::poll);
                 if let Some(result) = clock_sync_result {
                     clock_sync = None;
@@ -636,6 +662,7 @@ fn main() {
             }
             Ev::AppEnded => {
                 if app_session.take().is_some() {
+                    usage_rec.app_ended(now_secs());
                     log("system layer: the app ended; the launcher takes the screen back");
                     renderer.set_backdrop(None);
                     input::grab_touch(false);
@@ -655,11 +682,16 @@ fn main() {
                 }
             }
             Ev::Input(input) => {
+                match input {
+                    Input::Sleep => usage_rec.screen_off(now_secs()),
+                    Input::Wake => usage_rec.screen_on(now_secs()),
+                    _ => {}
+                }
                 // An app is in front: its input is its own, except the swipe that opens quick settings and the power
                 // events. For those the app is frozen and its screen saved, and the launcher draws again.
                 if let Some(session) = app_session.as_mut().filter(|s| s.in_front()) {
                     let opens = system_layer::opens_quick_settings(input, ui.layout.status().bottom());
-                    if input != Input::Sleep && !opens {
+                    if !matches!(input, Input::Sleep | Input::RestartHold) && !opens {
                         continue;
                     }
                     system_layer::freeze(&run, true);
@@ -914,6 +946,7 @@ fn main() {
                 if system_layer_on && system_layer::request_launch(&run) {
                     log("system layer: the supervisor runs the app; the launcher stays");
                     app_session = Some(system_layer::AppSession::new());
+                    usage_rec.app_started(&usage::app_name(&run), now_secs());
                     display.set_paused(true);
                     ui.pressed = None;
                     system_layer::watch(run.clone(), tx.clone());
@@ -1177,13 +1210,14 @@ fn main() {
                     display.show(renderer.draw(&ui, &status), &settings, false);
                     continue;
                 }
-                if matches!(cmd, DeviceCmd::ToggleLargeText | DeviceCmd::ToggleHighContrast | DeviceCmd::ToggleAnimation | DeviceCmd::ToggleDarkMode) {
+                if matches!(cmd, DeviceCmd::ToggleLargeText | DeviceCmd::ToggleHighContrast | DeviceCmd::ToggleAnimation | DeviceCmd::ToggleDarkMode | DeviceCmd::CycleScreenTimeout) {
                     let mut updated = settings.clone();
                     match cmd {
                         DeviceCmd::ToggleLargeText => updated.large_text = !updated.large_text,
                         DeviceCmd::ToggleHighContrast => updated.high_contrast = !updated.high_contrast,
                         DeviceCmd::ToggleAnimation => updated.animation = !updated.animation,
                         DeviceCmd::ToggleDarkMode => updated.dark_mode = !updated.dark_mode,
+                        DeviceCmd::CycleScreenTimeout => updated.screen_timeout = kl_core::settings::next_screen_timeout(updated.screen_timeout),
                         _ => unreachable!(),
                     }
                     ui.notice = if from_mirror {
@@ -1191,7 +1225,7 @@ fn main() {
                     } else if bootstrapping_store.is_some() {
                         Some("Wait for the Store to finish installing.".into())
                     } else {
-                        let result = if matches!(cmd, DeviceCmd::ToggleLargeText | DeviceCmd::ToggleHighContrast) {
+                        let result = if matches!(cmd, DeviceCmd::ToggleLargeText | DeviceCmd::ToggleHighContrast | DeviceCmd::CycleScreenTimeout) {
                             power.write_leased(&Settings::preferences_path(&settings_path), &updated.preferences_text())
                         } else {
                             power.write_leased(&settings_path, &updated.base_text())
@@ -1203,6 +1237,10 @@ fn main() {
                                 status.high_contrast = settings.high_contrast;
                                 status.animation = settings.animation;
                                 status.dark_mode = settings.dark_mode;
+                                status.screen_timeout = settings.screen_timeout;
+                                if cmd == DeviceCmd::CycleScreenTimeout {
+                                    device::set_screen_timeout(settings.screen_timeout);
+                                }
                                 None
                             }
                             Err(error) => Some(format!("Could not save appearance settings. {error}")),
@@ -1436,6 +1474,12 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
         DeviceCmd::Restart => device::system_command("reboot"),
         DeviceCmd::PowerOff => device::system_command("halt -f -p"),
         DeviceCmd::RestartLauncher => device::restart_launcher(),
+        // Handled with the other saved settings, where the change is written and applied.
+        DeviceCmd::CycleScreenTimeout => {}
+        DeviceCmd::QuitAppAndRestart => {
+            system_layer::end_app(run);
+            device::restart_launcher();
+        }
         DeviceCmd::StoreRefresh
         | DeviceCmd::StoreRemove(_)
         | DeviceCmd::StoreOpen(_)
