@@ -94,6 +94,11 @@ pub fn watch(run: PathBuf, tx: Sender<Ev>) {
     });
 }
 
+/// Close the open app the way the Kindle UI does: TERM to its process group. The app session then ends.
+pub fn end_app(run: &Path) {
+    signal_app(run, libc::SIGTERM);
+}
+
 /// Freeze the app (`true`) while a system screen is up, or let it run again (`false`).
 pub fn freeze(run: &Path, on: bool) {
     signal_app(run, if on { libc::SIGSTOP } else { libc::SIGCONT });

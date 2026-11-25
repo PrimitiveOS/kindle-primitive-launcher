@@ -367,6 +367,9 @@ fn main() {
         let t = tx.clone();
         thread::spawn(move || device::power_loop(t));
     }
+    // Holding both page-turn buttons for two seconds restarts the launcher (after confirmation).
+    let origin = std::time::Instant::now();
+    let mut page_chord = kl_core::page_chord::PageChord::default();
     {
         // The USB state, each second: an event is sent only when it changes.
         let t = tx.clone();
@@ -439,10 +442,30 @@ fn main() {
                 mark_trial_ready = false;
             }
         }
-        let Ok(ev) = rx.recv() else { break };
+        let ev = match page_chord.deadline() {
+            Some(at) => match rx.recv_timeout(std::time::Duration::from_millis(at.saturating_sub(origin.elapsed().as_millis() as u64))) {
+                Ok(ev) => ev,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ev::ChordTick,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            },
+            None => {
+                let Ok(ev) = rx.recv() else { break };
+                ev
+            }
+        };
         let previous_screen = ui.screen;
         let previous_usb = ui.usb;
         let action = match ev {
+            Ev::PageKey { code, down } => {
+                page_chord.key(code, down, origin.elapsed().as_millis() as u64);
+                Action::None
+            }
+            Ev::ChordTick => {
+                if page_chord.tick(origin.elapsed().as_millis() as u64) {
+                    let _ = tx.send(Ev::Input(Input::RestartHold));
+                }
+                Action::None
+            }
             Ev::Wifi(info) => {
                 ui.set_wifi(info);
                 // The Wi-Fi state (connected or not) is read again, so the rows show what the scan shows.
@@ -659,7 +682,7 @@ fn main() {
                 // events. For those the app is frozen and its screen saved, and the launcher draws again.
                 if let Some(session) = app_session.as_mut().filter(|s| s.in_front()) {
                     let opens = system_layer::opens_quick_settings(input, ui.layout.status().bottom());
-                    if input != Input::Sleep && !opens {
+                    if !matches!(input, Input::Sleep | Input::RestartHold) && !opens {
                         continue;
                     }
                     system_layer::freeze(&run, true);
@@ -1436,6 +1459,10 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
         DeviceCmd::Restart => device::system_command("reboot"),
         DeviceCmd::PowerOff => device::system_command("halt -f -p"),
         DeviceCmd::RestartLauncher => device::restart_launcher(),
+        DeviceCmd::QuitAppAndRestart => {
+            system_layer::end_app(run);
+            device::restart_launcher();
+        }
         DeviceCmd::StoreRefresh
         | DeviceCmd::StoreRemove(_)
         | DeviceCmd::StoreOpen(_)
