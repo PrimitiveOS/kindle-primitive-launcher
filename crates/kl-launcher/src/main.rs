@@ -490,6 +490,8 @@ fn main() {
         let t = tx.clone();
         thread::spawn(move || loop {
             thread::sleep(Duration::from_secs(5));
+            // The connected device is read here, on this thread, so the status bar drops a headset that has left.
+            device::bluetooth::refresh_connection();
             if t.send(Ev::Tick).is_err() {
                 return;
             }
