@@ -259,6 +259,7 @@ fn main() {
     }
 
     let wallpapers = wallpaper::load(&dir, settings.sleep_screen_launcher);
+    log(&format!("wallpapers at start: home {:?}, sleep {:?}, startup {:?}, {} pictures", wallpapers.home, wallpapers.sleep, wallpapers.startup, wallpapers.images.len()));
     settings.sleep_screen_launcher = wallpapers.sleep != WallpaperChoice::Default;
     let mut startup_wallpaper_until = None;
     if !from_mirror && std::env::var("KL_SHOW_STARTUP_WALLPAPER").as_deref() == Ok("1") {
