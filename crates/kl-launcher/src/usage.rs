@@ -127,12 +127,17 @@ fn hours_minutes(secs: u64) -> String {
     }
 }
 
-/// The app's name, from the entry it was asked to run (`documents/Snake.sh` is "Snake").
+/// The app's name, from the entry it was asked to run. The request file has the documents folder, the word `script`,
+/// and the entry path (`/mnt/us/documents/Snake.sh`, which gives "Snake").
 pub fn app_name(run: &Path) -> String {
     fs::read_to_string(run.join("app-request"))
         .ok()
-        .and_then(|text| text.lines().next().map(str::to_string))
-        .and_then(|entry| Path::new(entry.trim()).file_stem().map(|stem| stem.to_string_lossy().into_owned()))
+        .and_then(|text| {
+            text.lines()
+                .map(str::trim)
+                .find(|line| line.ends_with(".sh"))
+                .and_then(|entry| Path::new(entry).file_stem().map(|stem| stem.to_string_lossy().into_owned()))
+        })
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "App".to_string())
 }
@@ -169,7 +174,7 @@ mod tests {
     fn the_app_name_is_the_entry_file_name() {
         let dir = std::env::temp_dir().join(format!("kl-usage-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("app-request"), "/mnt/us/documents/Snake.sh\n").unwrap();
+        fs::write(dir.join("app-request"), "/mnt/us/documents\nscript\n/mnt/us/documents/Snake.sh\n\n").unwrap();
         assert_eq!(app_name(&dir), "Snake");
         fs::remove_file(dir.join("app-request")).unwrap();
         assert_eq!(app_name(&dir), "App");
