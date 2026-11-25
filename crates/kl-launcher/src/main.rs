@@ -261,17 +261,6 @@ fn main() {
     let wallpapers = wallpaper::load(&dir, settings.sleep_screen_launcher);
     log(&format!("wallpapers at start: home {:?}, sleep {:?}, startup {:?}, {} pictures", wallpapers.home, wallpapers.sleep, wallpapers.startup, wallpapers.images.len()));
     settings.sleep_screen_launcher = wallpapers.sleep != WallpaperChoice::Default;
-    let mut startup_wallpaper_until = None;
-    if !from_mirror && std::env::var("KL_SHOW_STARTUP_WALLPAPER").as_deref() == Ok("1") {
-        if let Some(image) = wallpaper::saved_picture(&dir, WallpaperTarget::Startup, &wallpapers, &mut 0) {
-            // A startup image cannot by itself prove the Launcher update reached the app grid.
-            let mut splash = Display::open();
-            splash.show(image.pixels, &settings, true);
-            if splash.has_presented_frame() {
-                startup_wallpaper_until = Some(Instant::now() + Duration::from_millis(800));
-            }
-        }
-    }
 
     // Reviewable system changes recover in Store with its storage write lease.
     let mut recovery_problem = None;
@@ -424,9 +413,6 @@ fn main() {
         log("system layer: started again over the running app");
     } else {
         let first = renderer.draw(&ui, &status);
-        if let Some(until) = startup_wallpaper_until {
-            thread::sleep(until.saturating_duration_since(Instant::now()));
-        }
         display.show(first, &settings, true);
         log(&format!("first screen after {} ms", started.elapsed().as_millis()));
     }
