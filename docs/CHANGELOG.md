@@ -3,6 +3,11 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.8.6
+
+- Quick settings has a media card while an app plays or is paused: the track, its state and time, and previous, play or pause, and next. An app shares its session through the media contract (docs/contracts.md §1.2); the launcher only reads and writes the files. The Music app is the first.
+- The installer restarts the launcher with the new build (the run copy is replaced before the restart).
+
 ## 0.8.5
 
 - Quick settings has a Sound row while headphones are connected: − and +, or a tap on the bar, change the Kindle's sound level (eight levels). The Music app uses the same level.
