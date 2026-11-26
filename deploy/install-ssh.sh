@@ -88,5 +88,7 @@ echo "installed: /mnt/us/launcher/kl-launcher ($(wc -c < "$BIN" | tr -d ' ') byt
 # The copy on /var/local that the boot uses when /mnt/us is away (see install-mirror.sh).
 sh "$HERE/deploy/install-mirror.sh" "$BIN"
 
-# Restart a running launcher so it loads the new build (the supervisor copies it again).
-$SSH 'p=$(cat /var/tmp/kl/launcher.pid 2>/dev/null); if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then kill -TERM "$p"; echo "launcher restarted"; else echo "launcher not running: open Launcher in the Kindle library"; fi'
+# Restart a running launcher so it loads the new build. The supervisor starts the launcher from its own copy in /var/tmp/kl,
+# and does not refresh that copy on a restart, so the new build is copied there first (atomically: a running copy keeps
+# its file).
+$SSH 'p=$(cat /var/tmp/kl/launcher.pid 2>/dev/null); if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then cp /mnt/us/launcher/kl-launcher /var/tmp/kl/kl-launcher.new && chmod 755 /var/tmp/kl/kl-launcher.new && mv /var/tmp/kl/kl-launcher.new /var/tmp/kl/kl-launcher && kill -TERM "$p" && echo "launcher restarted"; else echo "launcher not running: open Launcher in the Kindle library"; fi'
