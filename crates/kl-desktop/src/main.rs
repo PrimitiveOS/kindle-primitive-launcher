@@ -41,6 +41,7 @@ fn demo_status() -> Status {
     Status {
         clock: "10:42".into(),
         sound_level: None,
+        media: None,
         date: "Tue 17 Nov".into(),
         clock_year: Some(2026),
         utc_offset: Some(7 * 3600),
@@ -371,6 +372,21 @@ fn main() {
     ui.set_sound(Some(4));
     let with_sound = Status { sound_level: Some(4), ..bt_on.clone() };
     write_png(&out.join("quick-settings-sound.png"), W, H, &renderer.draw(&ui, &with_sound));
+    // A session from an app that plays: its card shows the track and the controls.
+    let session = kl_core::media::MediaSession {
+        app: "music".into(),
+        name: "Music".into(),
+        playing: true,
+        title: "Evening Bells".into(),
+        position: 83,
+        length: 203,
+        pid: Some(1),
+        ..Default::default()
+    };
+    ui.set_media(Some(session.clone()));
+    let with_media = Status { sound_level: Some(4), media: Some(session), ..bt_on.clone() };
+    write_png(&out.join("quick-settings-media.png"), W, H, &renderer.draw(&ui, &with_media));
+    ui.set_media(None);
     ui.set_sound(None);
     ui.screen = kl_core::Screen::Home;
     let both = Status { bluetooth_on: true, bluetooth_connected: Some("Headphones X".into()), ssh: true, ..demo_status() };
