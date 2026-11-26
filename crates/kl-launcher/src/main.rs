@@ -452,6 +452,32 @@ fn main() {
         thread::spawn(move || device::power_loop(t));
     }
     start_bt_refresh(tx.clone());
+    {
+        // The media session of the apps (the card in quick settings): read each second, sent only when it changes.
+        let t = tx.clone();
+        thread::spawn(move || {
+            let mut last: Option<kl_core::media::MediaSession> = None;
+            let mut last_sound: Option<u8> = None;
+            loop {
+                let now = device::media::current();
+                if now != last {
+                    last = now.clone();
+                    if t.send(Ev::Media(now)).is_err() {
+                        return;
+                    }
+                }
+                // The sound level, read each second while headphones are connected: the Music app changes it too.
+                let sound = if device::bluetooth::connected_name().is_some() { device::sound_level() } else { None };
+                if sound != last_sound {
+                    last_sound = sound;
+                    if t.send(Ev::Sound(sound)).is_err() {
+                        return;
+                    }
+                }
+                thread::sleep(Duration::from_secs(1));
+            }
+        });
+    }
     // Holding both page-turn buttons for two seconds restarts the launcher (after confirmation).
     let origin = std::time::Instant::now();
     let mut page_chord = kl_core::page_chord::PageChord::default();
@@ -490,6 +516,8 @@ fn main() {
         let t = tx.clone();
         thread::spawn(move || loop {
             thread::sleep(Duration::from_secs(5));
+            // The connected device is read here, on this thread, so the status bar drops a headset that has left.
+            device::bluetooth::refresh_connection();
             if t.send(Ev::Tick).is_err() {
                 return;
             }
@@ -558,6 +586,22 @@ fn main() {
                 ui.set_join_result(ok, message);
                 status = device::status(&settings);
                 Action::Redraw { full: false }
+            }
+            Ev::Sound(level) => {
+                status.sound_level = level;
+                if ui.set_sound(level) && ui.screen == Screen::QuickSettings {
+                    Action::Redraw { full: false }
+                } else {
+                    Action::None
+                }
+            }
+            Ev::Media(session) => {
+                status.media = session.clone();
+                if ui.set_media(session) && ui.screen == Screen::QuickSettings {
+                    Action::Redraw { full: false }
+                } else {
+                    Action::None
+                }
             }
             Ev::Bluetooth(info) => {
                 ui.set_bluetooth(info);
@@ -696,8 +740,11 @@ fn main() {
                                 || status.clock_sync_available != fresh.clock_sync_available))
                     };
                     let warned = ui.set_battery(fresh.battery, fresh.charging);
+                    // The sound row appears with headphones, and follows the level set elsewhere (the Music app).
+                    let sound_changed = ui.set_sound(fresh.sound_level);
+                    let media_changed = ui.set_media(fresh.media.clone());
                     status = fresh;
-                    if changed || warned {
+                    if changed || warned || ((sound_changed || media_changed) && ui.screen == Screen::QuickSettings) {
                         Action::Redraw { full: false }
                     } else {
                         Action::None
@@ -1418,6 +1465,7 @@ fn main() {
                     power.manually_changed_light();
                 }
                 run_device(cmd, &mut status, &mut settings, &dir, &run, &settings_path);
+                ui.set_sound(status.sound_level);
                 power.populate(&mut status, now_secs());
                 // The Kindle is going off: keep the "Powered Off" picture, do not draw the screen again.
                 if cmd == DeviceCmd::PowerOff {
@@ -1647,6 +1695,25 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
         DeviceCmd::ToggleAutostart => device::set_autostart(&dir.to_string_lossy(), !status.autostart),
         DeviceCmd::SetLight(level) => device::set_light(level),
         DeviceCmd::SetWarmth(level) => device::set_warmth(level),
+        DeviceCmd::Sound(step) => {
+            // Start from the level the device has now (the Music app may have changed it since the last read).
+            let current = device::sound_level().or(status.sound_level).unwrap_or(1);
+            let level = (current as i32 + step).clamp(1, kl_core::layout::SOUND_LEVELS as i32) as u8;
+            if device::set_sound_level(level) {
+                status.sound_level = Some(level);
+            }
+        }
+        DeviceCmd::Media(command) => {
+            // The card's buttons go to the app that plays (its `.cmd` file); the app's player does the rest.
+            if let Some(session) = status.media.clone() {
+                let _ = device::media::send(&session.app, command);
+            }
+        }
+        DeviceCmd::SetSound(level) => {
+            if device::set_sound_level(level) {
+                status.sound_level = Some(level);
+            }
+        }
         DeviceCmd::ToggleAutoRotation => {
             // Quick settings' Auto-rotate: the same as Settings > Screen > Auto, from the device's turn.
             settings.auto_rotation = !settings.auto_rotation;

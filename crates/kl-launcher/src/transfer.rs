@@ -355,8 +355,10 @@ mod tests {
         let endpoint = session.address.strip_prefix("http://").unwrap();
         let send = |code, filename, size, data| {
             let mut stream = TcpStream::connect(endpoint).unwrap();
-            write!(stream, "POST /upload HTTP/1.1\r\nX-Transfer-Code: {code}\r\nX-Filename: {filename}\r\nContent-Length: {size}\r\n\r\n{data}").unwrap();
-            stream.shutdown(std::net::Shutdown::Write).unwrap();
+            // The server may answer and close before the client has written everything (a rejected request): that is
+            // the answer the test checks, so a broken pipe here is not a failure.
+            let _ = write!(stream, "POST /upload HTTP/1.1\r\nX-Transfer-Code: {code}\r\nX-Filename: {filename}\r\nContent-Length: {size}\r\n\r\n{data}");
+            let _ = stream.shutdown(std::net::Shutdown::Write);
             let mut response = String::new();
             stream.read_to_string(&mut response).unwrap();
             response
