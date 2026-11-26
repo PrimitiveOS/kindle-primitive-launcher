@@ -3,6 +3,10 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.8.8
+
+- The sound row sets a media volume that the Music player applies to its audio, instead of the Kindle's speaker level. The Bluetooth stack overrode the speaker level while headphones were connected, so changes did not stick. A change restarts the playing segment, which makes a short gap.
+
 ## 0.8.7
 
 - The sound row follows the level the Music app sets, within a second, and its − and + start from the level the device has now. The two no longer disagree (before, a change in one left the other showing an old level).
