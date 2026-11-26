@@ -457,11 +457,20 @@ fn main() {
         let t = tx.clone();
         thread::spawn(move || {
             let mut last: Option<kl_core::media::MediaSession> = None;
+            let mut last_sound: Option<u8> = None;
             loop {
                 let now = device::media::current();
                 if now != last {
                     last = now.clone();
                     if t.send(Ev::Media(now)).is_err() {
+                        return;
+                    }
+                }
+                // The sound level, read each second while headphones are connected: the Music app changes it too.
+                let sound = if device::bluetooth::connected_name().is_some() { device::sound_level() } else { None };
+                if sound != last_sound {
+                    last_sound = sound;
+                    if t.send(Ev::Sound(sound)).is_err() {
                         return;
                     }
                 }
@@ -577,6 +586,14 @@ fn main() {
                 ui.set_join_result(ok, message);
                 status = device::status(&settings);
                 Action::Redraw { full: false }
+            }
+            Ev::Sound(level) => {
+                status.sound_level = level;
+                if ui.set_sound(level) && ui.screen == Screen::QuickSettings {
+                    Action::Redraw { full: false }
+                } else {
+                    Action::None
+                }
             }
             Ev::Media(session) => {
                 status.media = session.clone();
@@ -1679,7 +1696,9 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
         DeviceCmd::SetLight(level) => device::set_light(level),
         DeviceCmd::SetWarmth(level) => device::set_warmth(level),
         DeviceCmd::Sound(step) => {
-            let level = (status.sound_level.unwrap_or(1) as i32 + step).clamp(1, kl_core::layout::SOUND_LEVELS as i32) as u8;
+            // Start from the level the device has now (the Music app may have changed it since the last read).
+            let current = device::sound_level().or(status.sound_level).unwrap_or(1);
+            let level = (current as i32 + step).clamp(1, kl_core::layout::SOUND_LEVELS as i32) as u8;
             if device::set_sound_level(level) {
                 status.sound_level = Some(level);
             }
