@@ -3,6 +3,10 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.8.5
+
+- Quick settings has a Sound row while headphones are connected: − and +, or a tap on the bar, change the Kindle's sound level (eight levels). The Music app uses the same level.
+
 ## 0.8.4
 
 - The status bar and quick settings drop the headphones icon when they leave (put in their case, or switched off). The connected device is read every five seconds, not only when the Bluetooth page is opened.

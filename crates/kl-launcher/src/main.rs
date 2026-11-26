@@ -698,8 +698,10 @@ fn main() {
                                 || status.clock_sync_available != fresh.clock_sync_available))
                     };
                     let warned = ui.set_battery(fresh.battery, fresh.charging);
+                    // The sound row appears with headphones, and follows the level set elsewhere (the Music app).
+                    let sound_changed = ui.set_sound(fresh.sound_level);
                     status = fresh;
-                    if changed || warned {
+                    if changed || warned || (sound_changed && ui.screen == Screen::QuickSettings) {
                         Action::Redraw { full: false }
                     } else {
                         Action::None
@@ -1420,6 +1422,7 @@ fn main() {
                     power.manually_changed_light();
                 }
                 run_device(cmd, &mut status, &mut settings, &dir, &run, &settings_path);
+                ui.set_sound(status.sound_level);
                 power.populate(&mut status, now_secs());
                 // The Kindle is going off: keep the "Powered Off" picture, do not draw the screen again.
                 if cmd == DeviceCmd::PowerOff {
@@ -1649,6 +1652,17 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
         DeviceCmd::ToggleAutostart => device::set_autostart(&dir.to_string_lossy(), !status.autostart),
         DeviceCmd::SetLight(level) => device::set_light(level),
         DeviceCmd::SetWarmth(level) => device::set_warmth(level),
+        DeviceCmd::Sound(step) => {
+            let level = (status.sound_level.unwrap_or(1) as i32 + step).clamp(1, kl_core::layout::SOUND_LEVELS as i32) as u8;
+            if device::set_sound_level(level) {
+                status.sound_level = Some(level);
+            }
+        }
+        DeviceCmd::SetSound(level) => {
+            if device::set_sound_level(level) {
+                status.sound_level = Some(level);
+            }
+        }
         DeviceCmd::ToggleAutoRotation => {
             // Quick settings' Auto-rotate: the same as Settings > Screen > Auto, from the device's turn.
             settings.auto_rotation = !settings.auto_rotation;

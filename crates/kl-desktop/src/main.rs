@@ -40,6 +40,7 @@ fn demo_status() -> Status {
     let now = 1_800_000_000;
     Status {
         clock: "10:42".into(),
+        sound_level: None,
         date: "Tue 17 Nov".into(),
         clock_year: Some(2026),
         utc_offset: Some(7 * 3600),
@@ -366,6 +367,11 @@ fn main() {
     write_png(&out.join("bluetooth-confirm.png"), W, H, &renderer.draw(&ui, &bt_on));
     ui.screen = kl_core::Screen::QuickSettings;
     write_png(&out.join("quick-settings-bluetooth.png"), W, H, &renderer.draw(&ui, &bt_on));
+    // With headphones connected, the sound row shows the level (1 to 8).
+    ui.set_sound(Some(4));
+    let with_sound = Status { sound_level: Some(4), ..bt_on.clone() };
+    write_png(&out.join("quick-settings-sound.png"), W, H, &renderer.draw(&ui, &with_sound));
+    ui.set_sound(None);
     ui.screen = kl_core::Screen::Home;
     let both = Status { bluetooth_on: true, bluetooth_connected: Some("Headphones X".into()), ssh: true, ..demo_status() };
     write_png(&out.join("status-bluetooth-ssh.png"), W, H, &renderer.draw(&ui, &both));
