@@ -452,6 +452,23 @@ fn main() {
         thread::spawn(move || device::power_loop(t));
     }
     start_bt_refresh(tx.clone());
+    {
+        // The media session of the apps (the card in quick settings): read each second, sent only when it changes.
+        let t = tx.clone();
+        thread::spawn(move || {
+            let mut last: Option<kl_core::media::MediaSession> = None;
+            loop {
+                let now = device::media::current();
+                if now != last {
+                    last = now.clone();
+                    if t.send(Ev::Media(now)).is_err() {
+                        return;
+                    }
+                }
+                thread::sleep(Duration::from_secs(1));
+            }
+        });
+    }
     // Holding both page-turn buttons for two seconds restarts the launcher (after confirmation).
     let origin = std::time::Instant::now();
     let mut page_chord = kl_core::page_chord::PageChord::default();
@@ -560,6 +577,14 @@ fn main() {
                 ui.set_join_result(ok, message);
                 status = device::status(&settings);
                 Action::Redraw { full: false }
+            }
+            Ev::Media(session) => {
+                status.media = session.clone();
+                if ui.set_media(session) && ui.screen == Screen::QuickSettings {
+                    Action::Redraw { full: false }
+                } else {
+                    Action::None
+                }
             }
             Ev::Bluetooth(info) => {
                 ui.set_bluetooth(info);
@@ -700,8 +725,9 @@ fn main() {
                     let warned = ui.set_battery(fresh.battery, fresh.charging);
                     // The sound row appears with headphones, and follows the level set elsewhere (the Music app).
                     let sound_changed = ui.set_sound(fresh.sound_level);
+                    let media_changed = ui.set_media(fresh.media.clone());
                     status = fresh;
-                    if changed || warned || (sound_changed && ui.screen == Screen::QuickSettings) {
+                    if changed || warned || ((sound_changed || media_changed) && ui.screen == Screen::QuickSettings) {
                         Action::Redraw { full: false }
                     } else {
                         Action::None
@@ -1656,6 +1682,12 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
             let level = (status.sound_level.unwrap_or(1) as i32 + step).clamp(1, kl_core::layout::SOUND_LEVELS as i32) as u8;
             if device::set_sound_level(level) {
                 status.sound_level = Some(level);
+            }
+        }
+        DeviceCmd::Media(command) => {
+            // The card's buttons go to the app that plays (its `.cmd` file); the app's player does the rest.
+            if let Some(session) = status.media.clone() {
+                let _ = device::media::send(&session.app, command);
             }
         }
         DeviceCmd::SetSound(level) => {
